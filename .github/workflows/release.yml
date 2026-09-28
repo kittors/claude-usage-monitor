@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v1.0.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Test
+        run: swift test
+
+      - name: Build app
+        run: |
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          VERSION="$VERSION" BUILD_NUMBER="${{ github.run_number }}" ./Scripts/build-app.sh
+
+      - name: Package
+        run: |
+          ZIP="ClaudeUsageMonitor-$VERSION-macOS.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/Claude Usage Monitor.app" "build/$ZIP"
+          (cd build && shasum -a 256 "$ZIP" > "$ZIP.sha256")
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "SHA=$(cut -d' ' -f1 "build/$ZIP.sha256")" >> "$GITHUB_ENV"
+
+      - name: Release notes
+        run: ./Scripts/release-notes.sh "$VERSION" "$SHA" > build/RELEASE_NOTES.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Claude Usage Monitor $VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "build/$ZIP" "build/$ZIP.sha256" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file build/RELEASE_NOTES.md
+          else
+            gh release create "$TAG" "build/$ZIP" "build/$ZIP.sha256" \
+              --title "$TITLE" --notes-file build/RELEASE_NOTES.md --verify-tag
+          fi

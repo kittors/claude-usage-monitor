@@ -47,11 +47,11 @@ IDENTITY="${CODESIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development|Developer ID Application/ {print $2; exit}')"
 fi
-if [ -n "$IDENTITY" ]; then
-  echo "▸ 签名（开发证书）"
-else
+if [ -z "$IDENTITY" ] || [ "$IDENTITY" = "-" ]; then
   IDENTITY="-"
   echo "▸ 签名（ad-hoc）"
+else
+  echo "▸ 签名（开发证书）"
 fi
 codesign --force --sign "$IDENTITY" --timestamp=none "$APP" >/dev/null
 

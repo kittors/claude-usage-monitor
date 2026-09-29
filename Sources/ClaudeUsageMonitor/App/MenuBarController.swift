@@ -16,6 +16,7 @@ final class MenuBarController: NSObject {
     private var contentSize = CGSize(width: Metrics.popoverWidth + Metrics.shadowInset * 2, height: 760)
     private var anchor: NSRect = .zero
     private var monitors: [Any] = []
+    /// 内容变矮时，等收起动画播完再缩小窗口
     private var shrinkWork: DispatchWorkItem?
     /// 最近一次因「点击外部」而收起的时间
     private var lastOutsideClick = Date.distantPast
@@ -93,7 +94,6 @@ final class MenuBarController: NSObject {
             _ = prefs.menuBarStyle
             _ = prefs.menuBarMetric
             _ = prefs.showExitSafety
-            _ = prefs.blockIPv6
             _ = prefs.warningThreshold
             _ = NetworkPlace.shared.place
             _ = NetworkPlace.shared.ipv6
@@ -144,9 +144,9 @@ final class MenuBarController: NSObject {
             icon: prefs.menuBarIcon, style: prefs.menuBarStyle, text: text ?? "–",
             primary: primary, secondary: week?.fraction ?? 0, fraction: fraction,
             pose: iconInput?.pose ?? .idle,
-            showsSafety: prefs.showExitSafety && known,
+            showsSafety: (prefs.showExitSafety && known) || network.ipv6IsDirect,
             exitSafe: network.exitIsSafe,
-            ipv6Direct: network.ipv6IsDirect && !prefs.blockIPv6,
+            ipv6Direct: network.ipv6IsDirect,
             onDarkMenuBar: menuBarIsDark
         )
         iconInput = input
@@ -160,19 +160,12 @@ final class MenuBarController: NSObject {
             tip.append(L10n.t("官方用量：\(LimitsSection.shortReason(store.official.state))", "Official usage: \(LimitsSection.shortReason(store.official.state))"))
         }
         if let weekCost = snap?.week { tip.append(L10n.t("本周 \(money.string(weekCost.cost))", "This week \(money.string(weekCost.cost))")) }
-        if prefs.showExitSafety, known {
-            if network.ipv6IsDirect && !prefs.blockIPv6 {
-                tip.append(L10n.t("严重警告：IPv6 正在直连", "Severe warning: IPv6 is connecting directly"))
-            } else if network.exitIsSafe {
-                tip.append(L10n.t("出口安全", "Exit is safe"))
-            } else {
-                tip.append(L10n.t("出口不安全", "Exit is not safe"))
-            }
-            if prefs.blockIPv6 {
-                tip.append(L10n.t("已屏蔽 IPv6", "IPv6 blocked"))
-            } else {
-                tip.append(L10n.t("未屏蔽 IPv6，仍是风险点", "IPv6 is not blocked and is still a risk"))
-            }
+        if network.ipv6IsDirect {
+            tip.append(L10n.t("严重警告：IPv6 直连中国大陆、香港或澳门", "Severe warning: IPv6 connects directly from mainland China, Hong Kong, or Macau"))
+        } else if prefs.showExitSafety, known {
+            tip.append(network.exitIsSafe
+                ? L10n.t("出口安全", "Exit is safe")
+                : L10n.t("出口不安全", "Exit is not safe"))
         }
         statusItem.button?.toolTip = tip.isEmpty ? "Claude Usage Monitor" : tip.joined(separator: " · ")
     }
@@ -217,9 +210,22 @@ final class MenuBarController: NSObject {
         }
         hosting = NSHostingView(rootView: root)
         hosting.sizingOptions = []
-        hosting.frame = NSRect(origin: .zero, size: contentSize)
-        hosting.autoresizingMask = [.width, .height]
-        panel.contentView = hosting
+        // SwiftUI 画布的高度固定、贴住窗口顶部，窗口变高变矮都不会让 SwiftUI 重新布局。
+        // 否则每次改窗口尺寸都会打断正在进行的展开、收起动画，内容直接跳到终点。
+        hosting.frame = NSRect(x: 0, y: 0, width: contentSize.width, height: canvasHeight())
+        hosting.autoresizingMask = [.width, .maxYMargin]
+        let container = TopAnchoredView(frame: NSRect(origin: .zero, size: contentSize))
+        container.autoresizingMask = [.width, .height]
+        container.addSubview(hosting)
+        panel.contentView = container
+        // 先查一次，第一次打开面板时进程一栏就在，不会晚一拍再冒出来
+        ClaudeProcesses.shared.refresh()
+    }
+
+    /// 画布高度：面板最高能长到的高度（屏幕可用高度加上阴影边距）
+    private func canvasHeight() -> CGFloat {
+        let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main
+        return (screen?.visibleFrame.height ?? 900) + Metrics.shadowInset * 2
     }
 
     func toggle() {
@@ -234,6 +240,12 @@ final class MenuBarController: NSObject {
     func show() {
         guard let button = statusItem.button, let window = button.window else { return }
         anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let canvas = canvasHeight()
+        if abs(hosting.frame.height - canvas) > 0.5 {
+            hosting.frame = NSRect(x: 0, y: 0, width: hosting.frame.width, height: canvas)
+        }
+        shrinkWork?.cancel()
+        shrinkWork = nil
         layoutPanel()
         panel.orderFrontRegardless()
         panel.makeKey()
@@ -254,22 +266,27 @@ final class MenuBarController: NSObject {
         }
     }
 
+    /// 这里拿到的是动画终点的尺寸。SwiftUI 画布不随窗口变化，所以：
+    /// 变高时立刻加高窗口，给展开动画留出位置；变矮时等收起动画播完再缩小，避免还没收完的内容被窗口截断。
     private func contentSizeChanged(_ size: CGSize) {
         guard size.height > 10 else { return }
-        let grew = size.height > contentSize.height
         shrinkWork?.cancel()
-        if grew || !panel.isVisible {
+        shrinkWork = nil
+        guard abs(size.height - contentSize.height) > 0.5 else { return }
+        if size.height > contentSize.height || !panel.isVisible {
             contentSize.height = size.height
             layoutPanel()
-        } else {
-            // 等 SwiftUI 收起动画结束再缩小窗口，避免内容被截断
-            let work = DispatchWorkItem { [weak self] in
-                self?.contentSize.height = size.height
-                self?.layoutPanel()
-            }
-            shrinkWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            return
         }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.shrinkWork = nil
+            self.contentSize.height = size.height
+            self.layoutPanel()
+        }
+        shrinkWork = work
+        // 比展开、收起动画（`Animation.disclosure`）稍长
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
     private func layoutPanel() {
@@ -282,7 +299,10 @@ final class MenuBarController: NSObject {
         var x = anchorPoint.x - width / 2
         x = min(max(x, visible.minX - inset + 6), visible.maxX - width + inset - 6)
         let top = anchorPoint.y - 5 + inset
-        panel.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: true)
+        let frame = NSRect(x: x, y: top - height, width: width, height: height)
+        guard frame != panel.frame else { return }
+        // 画布贴着窗口顶部、大小不变，改窗口尺寸只是露出或遮住下方透明的部分
+        panel.setFrame(frame, display: false)
     }
 
     // MARK: 事件监听
@@ -344,6 +364,11 @@ final class MenuBarController: NSObject {
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
     }
+}
+
+/// 面板的内容视图：坐标从左上角算起，窗口高度变化时里面的 SwiftUI 画布原地不动
+private final class TopAnchoredView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 /// 本地事件监听中需要的字段（`NSEvent` 不是 Sendable，不能直接带进主线程隔离的闭包）

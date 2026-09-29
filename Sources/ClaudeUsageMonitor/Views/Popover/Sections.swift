@@ -29,7 +29,7 @@ struct LimitsSection: View {
             }
             if rows.isEmpty || official.state.awaitingLogin {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(Self.unavailableReason(official.state))
+                    Text(Self.unavailableReason(official.state, fetching: official.isFetching))
                         .font(.caption)
                         .foregroundStyle(Palette.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -43,15 +43,28 @@ struct LimitsSection: View {
     }
 
     private func statusText(_ official: OfficialUsageService, now: Date) -> String {
-        guard let usage = official.usage else { return Self.shortReason(official.state) }
+        if let notice = official.notice { return notice }
+        guard let usage = official.usage else {
+            if official.state == .connecting, !official.isFetching { return L10n.t("尚未查询", "Not checked yet") }
+            return Self.shortReason(official.state)
+        }
         let synced = L10n.t("\(Fmt.relative(usage.fetchedAt, now: now))同步", "Synced \(Fmt.relative(usage.fetchedAt, now: now))")
-        return official.state == .connected ? synced : "\(synced) · \(Self.shortReason(official.state))"
+        if official.state == .connected { return synced }
+        var reason = Self.shortReason(official.state)
+        if official.rateLimitedUntil > now {
+            let minutes = max(1, Int((official.rateLimitedUntil.timeIntervalSince(now) / 60).rounded(.up)))
+            reason += L10n.t("，约 \(minutes) 分钟后重试", ", retry in about \(minutes) min")
+        }
+        return "\(synced) · \(reason)"
     }
 
     private func statusHelp(_ official: OfficialUsageService) -> String {
-        var lines = [L10n.t("来自 Claude 官方用量接口（与 Claude Code /usage 相同），每 5 分钟同步一次，打开面板时也会同步", "From the same endpoint as Claude Code /usage. Syncs every 5 minutes, and when you open the panel.")]
+        var lines = [L10n.t(
+            "来自 Claude 官方用量接口（与 Claude Code /usage 相同）。Claude Code 正在使用时，按「设置 › 用量 › 自动查询」的频率同步；随时可以点「立即刷新」",
+            "From the same endpoint as Claude Code /usage. While Claude Code is in use, it syncs as set in Settings > Usage > Check automatically. Refresh works any time."
+        )]
         if let usage = official.usage { lines.append(L10n.t("上次同步：\(Self.moment(usage.fetchedAt))", "Last sync: \(Self.moment(usage.fetchedAt))")) }
-        if official.state != .connected, official.usage != nil { lines.append(Self.unavailableReason(official.state)) }
+        if official.state != .connected, official.usage != nil { lines.append(Self.unavailableReason(official.state, fetching: official.isFetching)) }
         return lines.joined(separator: "\n")
     }
 
@@ -69,9 +82,12 @@ struct LimitsSection: View {
     }
 
     /// 暂时没有官方数据时的说明
-    static func unavailableReason(_ state: OfficialUsageService.State) -> String {
+    static func unavailableReason(_ state: OfficialUsageService.State, fetching: Bool) -> String {
         switch state {
-        case .connected, .connecting: L10n.t("正在获取官方用量…", "Fetching official usage…")
+        case .connected, .connecting:
+            fetching
+                ? L10n.t("正在获取官方用量…", "Fetching official usage…")
+                : L10n.t("还没有官方数据。Claude Code 正在使用时会自动查询，也可以点「立即刷新」。", "No official numbers yet. They are checked while Claude Code is in use, or tap Refresh.")
         case .disabled: L10n.t("官方用量已关闭，可在「设置 › 用量」中开启。", "Official usage is off. Turn it on in Settings > Usage.")
         case .noCredentials: L10n.t("没有找到 Claude Code 的登录信息，登录后即可显示官方用量。", "No Claude Code login found. Sign in to show official usage.")
         case .denied: L10n.t("没有获得钥匙串授权，请在「设置 › 用量」中重新连接，并在系统弹窗中选择「始终允许」。", "Keychain access was denied. Reconnect in Settings > Usage and choose Always Allow.")
@@ -115,9 +131,9 @@ private struct LimitRowView: View {
 
     private func resetText(now: Date) -> String {
         switch row.reset {
-        case .countdown(let date): date > now ? L10n.t("\(Fmt.countdown(date.timeIntervalSince(now)))后重置", "Resets in \(Fmt.countdown(date.timeIntervalSince(now)))") : L10n.t("已重置，正在同步", "Reset, syncing")
-        case .weekday(let date): date > now ? L10n.t("\(LimitsSection.weekday(date)) 重置", "Resets \(LimitsSection.weekday(date))") : L10n.t("已重置，正在同步", "Reset, syncing")
-        case .elapsed: L10n.t("已重置，正在同步", "Reset, syncing")
+        case .countdown(let date): date > now ? L10n.t("\(Fmt.countdown(date.timeIntervalSince(now)))后重置", "Resets in \(Fmt.countdown(date.timeIntervalSince(now)))") : L10n.t("已重置", "Reset")
+        case .weekday(let date): date > now ? L10n.t("\(LimitsSection.weekday(date)) 重置", "Resets \(LimitsSection.weekday(date))") : L10n.t("已重置", "Reset")
+        case .elapsed: L10n.t("已重置", "Reset")
         case .idle: L10n.t("空闲中", "Idle")
         case .none: ""
         }

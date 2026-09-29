@@ -62,5 +62,7 @@ extension Font {
 
 extension Animation {
     static let quiet = Animation.easeOut(duration: 0.18)
+    /// 展开、收起：起步利落、收尾柔和，并且恰好停在终点（弹簧最后会有一下细微的归位）
+    static let disclosure = Animation.timingCurve(0.25, 0.1, 0.25, 1, duration: 0.3)
     static let settle = Animation.timingCurve(0.2, 0.8, 0.2, 1, duration: 0.7)
 }

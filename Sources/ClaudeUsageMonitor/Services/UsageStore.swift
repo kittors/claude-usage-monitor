@@ -139,24 +139,12 @@ final class UsageStore {
         official.onChange = { [weak self] in self?.officialChanged() }
         official.autoRenew = prefs.autoRenewLogin
         official.outboundProxy = OutboundProxy.parse(prefs.officialProxy)
-        official.blockIPv6 = prefs.blockIPv6
+        lastSeenSync = official.usage?.fetchedAt
         NetworkPlace.shared.proxy = official.outboundProxy
-        NetworkPlace.shared.blockIPv6 = prefs.blockIPv6
-        NetworkPlace.shared.onUpdate = { [weak self] in
-            guard let self, !NetworkPlace.shared.blocksOfficialUsage, self.sessionActive() else { return }
-            self.official.claudeActive = true
-            self.official.refresh(.timer)
-        }
+        NetworkPlace.shared.onUpdate = { [weak self] in self?.exitChecked() }
         NetworkPlace.shared.refresh()
-        if prefs.officialUsageEnabled {
-            // 启动时不主动访问 Anthropic。只有 Claude Code 正在用，才同步一次。
-            if sessionActive() {
-                official.claudeActive = true
-                official.refresh(.timer)
-            }
-        } else {
-            official.setEnabled(false)
-        }
+        // 启动时不主动访问 Anthropic：第一次算出本机用量后，Claude Code 正在使用才查一次
+        if !prefs.officialUsageEnabled { official.setEnabled(false) }
         ExchangeRates.shared.refreshIfStale()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { AppUpdate.shared.checkIfStale() }
         observeOfficialSettings()
@@ -167,6 +155,7 @@ final class UsageStore {
                 self.scan(initial: true)
                 self.startWatching()
                 self.startTimer()
+                self.startAutoSync()
                 self.observePreferences()
                 self.observeDataDirectory()
                 self.observeSystem()
@@ -181,13 +170,13 @@ final class UsageStore {
         pendingScan?.cancel()
         pendingScan = nil
         scan()
-        official.refresh(.manual)
+        requestOfficial(.manual)
     }
 
-    /// 弹窗打开时调用：数据超过 1 分钟就同步一次（仍受频率限制保护）
+    /// 弹窗打开时调用：Claude Code 正在使用、数据超过 10 秒才查询官方用量
     func panelOpened() {
         NetworkPlace.shared.refreshIfStale()
-        official.refresh(.panel)
+        evaluateAutoSync(.panelOpened)
         ExchangeRates.shared.refreshIfStale()
         AppUpdate.shared.checkIfStale()
     }
@@ -217,7 +206,6 @@ final class UsageStore {
                 self.isScanning = false
                 self.lastScan = stats
                 self.lastScanAt = Date()
-                if !initial, stats.filesParsed > 0 { self.noteSessionActivity() }
                 if stats.changed || self.snapshot == nil {
                     self.recompute(pulse: !initial && stats.changed)
                 } else {
@@ -268,12 +256,19 @@ final class UsageStore {
                 self.lastUpdated = Date()
                 self.phase = (snap?.hasData ?? false) ? .ready : (self.isScanning ? self.phase : .empty)
                 if pulse { self.pulse += 1 }
+                self.trackConsumption(snap)
                 self.onUpdate?()
             }
         }
     }
 
     private func officialChanged() {
+        if let fetched = official.usage?.fetchedAt, fetched != lastSeenSync {
+            // 新的一次成功查询：请求发出之前的消耗都已经体现在官方数字里
+            syncedCost = requestCost ?? observedCost
+            lastSeenSync = fetched
+            requestCost = nil
+        }
         if let plan = official.detectedPlan, plan != prefs.plan { prefs.plan = plan }
         // 记下每周限额的重置时刻，下次启动、还没同步完时周期也不会退回 0:00
         if let reset = official.usage?.weeklyReset() {
@@ -291,21 +286,18 @@ final class UsageStore {
             _ = prefs.officialUsageEnabled
             _ = prefs.autoRenewLogin
             _ = prefs.officialProxy
-            _ = prefs.blockIPv6
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 let renewTurnedOn = self.prefs.autoRenewLogin && !self.official.autoRenew
                 self.official.autoRenew = self.prefs.autoRenewLogin
                 self.official.outboundProxy = OutboundProxy.parse(self.prefs.officialProxy)
-                self.official.blockIPv6 = self.prefs.blockIPv6
                 NetworkPlace.shared.proxy = self.official.outboundProxy
-                NetworkPlace.shared.blockIPv6 = self.prefs.blockIPv6
                 NetworkPlace.shared.refresh()
                 if self.prefs.officialUsageEnabled == (self.official.state == .disabled) {
                     self.official.setEnabled(self.prefs.officialUsageEnabled)
                 } else if renewTurnedOn, self.official.state == .expired {
-                    self.official.refresh(.manual)
+                    self.requestOfficial(.manual)
                 }
                 self.observeOfficialSettings()
             }
@@ -327,6 +319,9 @@ final class UsageStore {
     func rebuildIndex() {
         watcher?.stop()
         snapshot = nil
+        observedCost = nil
+        syncedCost = nil
+        lastCostIncrease = nil
         phase = .indexing(0)
         engine.reset(signature: prefs.sourceSignature)
         scan(initial: true)
@@ -349,24 +344,9 @@ final class UsageStore {
     }
 
     private func filesChanged() {
-        noteSessionActivity()
         // 活跃会话会持续写文件：最多每 2.5 秒扫描一次，且不会被持续的事件无限推迟
         let since = Date().timeIntervalSince(lastScanAt)
         scheduleScan(after: max(0.3, 2.5 - since))
-    }
-
-    /// 会话日志刚写过，或 Claude Code 进程还在。安静超过 10 分钟后不再后台请求官方用量。
-    private var lastLogActivity = Date.distantPast
-
-    private func noteSessionActivity() {
-        lastLogActivity = Date()
-        official.claudeActive = true
-        official.refresh(.timer)
-    }
-
-    private func sessionActive() -> Bool {
-        if Date().timeIntervalSince(lastLogActivity) < 10 * 60 { return true }
-        return ClaudeProcess.isRunning()
     }
 
     private func startTimer() {
@@ -376,27 +356,12 @@ final class UsageStore {
                 guard let self else { return }
                 // 时间窗口会随时间滑动；同时作为 FSEvents 的兜底
                 if Date().timeIntervalSince(self.lastScanAt) > 55 { self.scan() } else { self.recompute() }
-                self.official.claudeActive = self.sessionActive()
-                self.official.refresh(.timer)
                 ExchangeRates.shared.refreshIfStale()
             }
         }
         timer.tolerance = 5
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-    }
-
-    private enum ClaudeProcess {
-        static func isRunning() -> Bool {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-            process.arguments = ["-x", "claude"]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            do { try process.run() } catch { return false }
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        }
     }
 
     private func observePreferences() {
@@ -432,8 +397,109 @@ final class UsageStore {
         observers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.scheduleScan(after: 2)
-                self?.official.refresh(.panel)
+                self?.evaluateAutoSync(.resume)
             }
         })
+    }
+
+    // MARK: 自动查询官方用量
+
+    /// 本机累计消耗（按 API 价格折算）。增加了就说明 Claude Code 有新的 Token 消耗
+    @ObservationIgnored private var observedCost: Double?
+    /// 最近一次看到累计消耗增加的时间
+    @ObservationIgnored private var lastCostIncrease: Date?
+    /// 上次成功查询时（请求发出那一刻）的累计消耗
+    @ObservationIgnored private var syncedCost: Double?
+    /// 正在进行的请求发出时的累计消耗
+    @ObservationIgnored private var requestCost: Double?
+    /// 已经处理过的官方数据获取时间（用来发现新的一次成功查询）
+    @ObservationIgnored private var lastSeenSync: Date?
+    @ObservationIgnored private var autoSyncTimer: Timer?
+    @ObservationIgnored private var runningCheck: (at: Date, running: Bool)?
+    @ObservationIgnored private var launchSyncPending = true
+    @ObservationIgnored private var exitWasAllowed = false
+
+    /// 每 2 秒按「设置 › 用量 › 自动查询」判断一次；没有新消耗时几乎不做事
+    private func startAutoSync() {
+        autoSyncTimer?.invalidate()
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.evaluateAutoSync(.tick) }
+        }
+        timer.tolerance = 0.5
+        RunLoop.main.add(timer, forMode: .common)
+        autoSyncTimer = timer
+    }
+
+    private func trackConsumption(_ snap: UsageSnapshot?) {
+        guard let snap else { return }
+        let cost = snap.lifetimeCost
+        var increased = false
+        if let observed = observedCost {
+            if cost > observed + 0.000_001 {
+                lastCostIncrease = Date()
+                increased = true
+            } else if cost < observed {
+                syncedCost = cost
+            }
+        }
+        observedCost = cost
+        if syncedCost == nil { syncedCost = cost }
+        if launchSyncPending {
+            launchSyncPending = false
+            evaluateAutoSync(.resume)
+        } else if increased {
+            evaluateAutoSync(.tick)
+        }
+    }
+
+    /// 最近一次消耗：会话记录的时间与看到累计消耗增加的时间，取较晚的一个
+    private func consumptionActivity() -> AutoSyncPolicy.Activity {
+        let cost = observedCost ?? 0
+        return AutoSyncPolicy.Activity(
+            claudeCodeRunning: false,
+            lastConsumption: [snapshot?.lastRecord, lastCostIncrease].compactMap { $0 }.max(),
+            unsyncedCost: max(0, cost - (syncedCost ?? cost))
+        )
+    }
+
+    /// 自动查询：只有 Claude Code 正在使用（终端或桌面版）、出口可用时才会发出
+    private func evaluateAutoSync(_ occasion: AutoSyncPolicy.Occasion) {
+        guard prefs.officialUsageEnabled, official.state != .disabled else { return }
+        let now = Date()
+        var activity = consumptionActivity()
+        // 最近没有消耗就不必再检查进程
+        guard AutoSyncPolicy.hasRecentConsumption(activity, now: now) else { return }
+        activity.claudeCodeRunning = claudeCodeRunning(now)
+        guard AutoSyncPolicy.shouldSync(
+            mode: prefs.autoSyncMode, occasion: occasion, activity: activity,
+            lastRequest: official.lastAttempt, lastSync: official.usage?.fetchedAt,
+            windowReset: official.windowHasReset(now), now: now
+        ) else { return }
+        guard !NetworkPlace.shared.blocksOfficialUsage else {
+            // 出口还没确认，或上次确认时不可用：重新确认，变为可用后会再判断一次
+            NetworkPlace.shared.refreshIfStale(maxAge: 60)
+            return
+        }
+        requestOfficial(.auto)
+    }
+
+    private func requestOfficial(_ trigger: OfficialUsageService.Trigger) {
+        let cost = observedCost
+        if official.refresh(trigger) { requestCost = cost }
+    }
+
+    /// 进程检查每 10 秒最多做一次
+    private func claudeCodeRunning(_ now: Date) -> Bool {
+        if let check = runningCheck, now.timeIntervalSince(check.at) < 10 { return check.running }
+        let running = ClaudeProcesses.isClaudeCodeRunning()
+        runningCheck = (now, running)
+        return running
+    }
+
+    /// 出口确认完成：从不可用变为可用时，正在使用就查一次
+    private func exitChecked() {
+        let allowed = !NetworkPlace.shared.blocksOfficialUsage
+        defer { exitWasAllowed = allowed }
+        if allowed, !exitWasAllowed { evaluateAutoSync(.resume) }
     }
 }

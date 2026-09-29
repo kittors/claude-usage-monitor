@@ -74,6 +74,21 @@ enum CostSpan: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+extension AutoSyncMode: Identifiable {
+    public var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .consumption: L10n.tNow("按 Token 消耗", "By token use")
+        case .every10Seconds: L10n.tNow("每 10 秒", "Every 10 seconds")
+        case .every30Seconds: L10n.tNow("每 30 秒", "Every 30 seconds")
+        case .everyMinute: L10n.tNow("每 1 分钟", "Every minute")
+        case .every2Minutes: L10n.tNow("每 2 分钟", "Every 2 minutes")
+        case .every5Minutes: L10n.tNow("每 5 分钟", "Every 5 minutes")
+        }
+    }
+}
+
 /// 偏好设置（`UserDefaults` 持久化）。
 @MainActor
 @Observable
@@ -124,8 +139,6 @@ final class Preferences {
     var menuBarMetric: MenuBarMetric { didSet { save(menuBarMetric.rawValue, "menuBarMetric") } }
     /// 菜单栏数值右侧显示出口安不安全。
     var showExitSafety: Bool { didSet { save(showExitSafety, "showExitSafety") } }
-    /// 本应用访问 Claude 的官方请求只走 IPv4。
-    var blockIPv6: Bool { didSet { save(blockIPv6, "blockIPv6") } }
     /// 本期消耗看哪一段。默认本周，因为额度按周重置。
     var costSpan: CostSpan { didSet { save(costSpan.rawValue, "costSpan") } }
     /// 上次同步到的每周限额重置时间，用来在下次同步前继续对齐本周。
@@ -141,8 +154,10 @@ final class Preferences {
     var officialUsageEnabled: Bool { didSet { save(officialUsageEnabled, "officialUsageEnabled") } }
     /// 官方用量和续期的出口。空字符串表示系统代理。
     var officialProxy: String { didSet { save(officialProxy, "officialProxy") } }
-    /// Claude Code 的登录过期时自动续期。默认关闭：续期会向 Anthropic 更换登录。
+    /// Claude Code 的登录快过期时自动续期。默认开启。
     var autoRenewLogin: Bool { didSet { save(autoRenewLogin, "autoRenewLogin") } }
+    /// 自动查询官方用量的频率。默认按 Token 消耗。
+    var autoSyncMode: AutoSyncMode { didSet { save(autoSyncMode.rawValue, "autoSyncMode") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -163,20 +178,22 @@ final class Preferences {
         menuBarStyle = MenuBarStyle(rawValue: d.string(forKey: "menuBarStyle") ?? "") ?? .iconPercent
         menuBarMetric = MenuBarMetric(rawValue: d.string(forKey: "menuBarMetric") ?? "") ?? .fiveHour
         showExitSafety = d.object(forKey: "showExitSafety") as? Bool ?? true
-        blockIPv6 = d.object(forKey: "blockIPv6") as? Bool ?? false
         costSpan = CostSpan(rawValue: d.string(forKey: "costSpan") ?? "") ?? .week
         weeklyResetAt = (d.object(forKey: "weeklyResetAt") as? Double).map { Date(timeIntervalSince1970: $0) }
         warningThreshold = d.object(forKey: "warningThreshold") as? Double ?? 0.8
         notificationsEnabled = d.object(forKey: "notificationsEnabled") as? Bool ?? true
         officialUsageEnabled = d.object(forKey: "officialUsageEnabled") as? Bool ?? true
         officialProxy = d.string(forKey: "officialProxy") ?? ""
-        // 旧版本把自动续期默认写成了开启。这一版只关闭一次，之后尊重用户自己的选择。
-        if d.object(forKey: "didDisableAutoRenewForSafety") == nil {
-            d.set(true, forKey: "didDisableAutoRenewForSafety")
-            autoRenewLogin = false
+        // 自动续期默认开启。1.1 之后有一版出于安全考虑统一关掉过一次，这里恢复一次，之后尊重用户自己的选择。
+        if d.object(forKey: "didEnableAutoRenewByDefault") == nil {
+            d.set(true, forKey: "didEnableAutoRenewByDefault")
+            d.set(true, forKey: "autoRenewLogin")
+            d.removeObject(forKey: "didDisableAutoRenewForSafety")
+            autoRenewLogin = true
         } else {
-            autoRenewLogin = d.object(forKey: "autoRenewLogin") as? Bool ?? false
+            autoRenewLogin = d.object(forKey: "autoRenewLogin") as? Bool ?? true
         }
+        autoSyncMode = AutoSyncMode(rawValue: d.string(forKey: "autoSyncMode") ?? "") ?? .consumption
     }
 
     private func save(_ value: Any?, _ key: String) {

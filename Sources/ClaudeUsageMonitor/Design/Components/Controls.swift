@@ -12,6 +12,13 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
+/// 没有按下效果：整行可点，按住时文字和图标保持原样
+struct StillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
+}
+
 /// 底栏文字按钮
 struct FooterButton: View {
     let icon: Icon

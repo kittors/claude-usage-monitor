@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-29
+
+### Added
+
+- **Settings > Usage > Check automatically** sets how often official usage is checked while Claude Code is in use:
+  - **By token use** is the default. A check runs when new usage since the last check reaches $0.50 at API prices, at least every 2 minutes while tokens keep being used, and once more 15 seconds after they stop.
+  - Fixed intervals of 10 seconds, 30 seconds, 1 minute, 2 minutes, and 5 minutes are also available.
+- The panel lists running Claude processes. Each Claude Code session gets its own row with its working directory and memory, and hovering shows Force Quit. Claude Code in Terminal is recognized however it was installed: the install script, Homebrew, npm, or the copy inside the desktop app. Helper processes of the desktop app are counted under Claude.
+
+### Changed
+
+- Automatic checks run only while Claude Code is in use and the exit is allowed. In use means a Claude Code session is running, in Terminal or in the desktop app, and it used tokens in the last 5 minutes. Refresh only needs an allowed exit.
+- Any two official requests are at least 10 seconds apart, down from a minute. Refresh says why when it does not send a request: it just checked, the rate limit is active, or the exit is not allowed.
+- Renew login automatically is on by default again. Existing installs have it turned back on once. After that, your choice is kept.
+- The app reads the login before it checks the exit, so it makes no network requests while signed out.
+- Official requests always use IPv4. The panel no longer has a button to block IPv6. A direct IPv6 connection from mainland China, Hong Kong, or Macau shows a severe warning in the panel and the menu bar.
+- Expanding and collapsing the process list moves the whole panel in one smooth animation. Content below no longer jumps ahead of the list or overlaps it. Pressing the row no longer dims it.
+- While the exit is being checked, the panel shows placeholders in the same layout as the result, then fades the result in.
+- The hidden part of the exit address is replaced digit for digit with dots, so showing the full address changes only the digits.
+
 ## [1.2.1] - 2026-09-29
 
 ### Changed

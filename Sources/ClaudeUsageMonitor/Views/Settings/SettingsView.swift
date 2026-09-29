@@ -116,6 +116,10 @@ private struct UsagePage: View {
             }
             if prefs.officialUsageEnabled {
                 Hairline()
+                SettingsRow(title: L10n.t("自动查询", "Check automatically"), detail: autoSyncDetail) {
+                    DropdownButton(options: AutoSyncMode.allCases.map { ($0, $0.title) }, selection: $prefs.autoSyncMode)
+                }
+                Hairline()
                 SettingsRow(title: L10n.t("官方请求代理", "Official request proxy"), detail: proxyDetail) {
                     ProxyField(text: $prefs.officialProxy)
                 }
@@ -141,8 +145,8 @@ private struct UsagePage: View {
                 }
             }
             Text(L10n.t(
-                "官方用量会用当前登录访问 Anthropic，需要和 Claude Code 走同一网络。只在 Claude Code 正在使用、打开面板或到达重置时间时同步。关闭后仍可看本机费用。",
-                "Official usage sends your login to Anthropic and must use the same network as Claude Code. It syncs while Claude Code is in use, when you open the panel, or when a window resets. Local cost stays available when this is off."
+                "官方用量会用当前登录访问 Anthropic，需要和 Claude Code 走同一网络。自动查询只在出口可用、且 Claude Code（终端或桌面版）正在使用时进行；手动刷新只要求出口可用。任意两次查询至少间隔 10 秒。关闭后仍可看本机费用。",
+                "Official usage sends your login to Anthropic and must use the same network as Claude Code. Automatic checks run only while the exit is allowed and Claude Code (Terminal or desktop) is in use. Refresh only needs an allowed exit. Checks are at least 10 seconds apart. Local cost stays available when this is off."
             ))
                 .font(.system(size: 11))
                 .foregroundStyle(Palette.tertiary)
@@ -175,7 +179,10 @@ private struct UsagePage: View {
             let plan = (official.detectedPlan ?? prefs.plan).map { " · \($0.title)" } ?? ""
             return L10n.t("已连接\(plan) · \(synced ?? "刚刚同步")，与 Claude Code /usage 一致",
                           "Connected\(plan) · \(synced ?? "just now"), same as Claude Code /usage")
-        case .connecting: return L10n.t("正在连接…", "Connecting…")
+        case .connecting:
+            return official.isFetching
+                ? L10n.t("正在连接…", "Connecting…")
+                : L10n.t("尚未查询：Claude Code 正在使用时自动查询", "Not checked yet. It checks while Claude Code is in use.")
         case .noCredentials: return L10n.t("未找到 Claude Code 的登录信息", "No Claude Code login found")
         case .denied: return L10n.t("未获得钥匙串授权", "Keychain access was denied")
         case .expired:
@@ -185,6 +192,26 @@ private struct UsagePage: View {
         case .signedOut: return L10n.t("Claude Code 的登录已失效（登录到期或已退出），需要重新登录", "The Claude Code login is no longer valid. Sign in again.")
         case .failed(let message): return L10n.t("暂时无法获取（\(message)），稍后自动重试", "Unavailable (\(message)). Retrying shortly.") + (synced.map { " · \($0)" } ?? "")
         case .disabled: return L10n.t("已关闭，菜单栏与面板不显示 5 小时 / 每周用量", "Off. The menu bar and panel hide 5-hour and weekly usage.")
+        }
+    }
+
+    private var autoSyncDetail: String {
+        switch prefs.autoSyncMode {
+        case .consumption:
+            return L10n.t(
+                "按本机的 Token 消耗决定：消耗越快查得越勤，最快 10 秒一次，持续消耗时最长 2 分钟一次；消耗停下后再补查一次。",
+                "Follows local token use: the faster tokens go, the more often it checks, at most every 10 seconds and at least every 2 minutes while tokens are used. One more check after use stops."
+            )
+        case .every10Seconds:
+            return L10n.t(
+                "Claude Code 正在使用时每 10 秒查询一次。间隔这么短容易被接口限流，被限流后要等 5 到 30 分钟。",
+                "Checks every 10 seconds while Claude Code is in use. This often hits the rate limit, and then checks pause for 5 to 30 minutes."
+            )
+        case let mode:
+            let seconds = Int(mode.interval ?? 0)
+            let zh = seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分钟"
+            let en = seconds < 60 ? "\(seconds) seconds" : (seconds == 60 ? "minute" : "\(seconds / 60) minutes")
+            return L10n.t("Claude Code 正在使用时每 \(zh)查询一次。", "Checks every \(en) while Claude Code is in use.")
         }
     }
 
@@ -204,8 +231,8 @@ private struct UsagePage: View {
         if let renewed = official.lastRenewal { status.append(L10n.t("上次续期 \(LimitsSection.moment(renewed))", "Renewed \(LimitsSection.moment(renewed))")) }
         if let until = official.loginExpiresAt { status.append(L10n.t("登录有效期至 \(Self.day(until))", "Login valid until \(Self.day(until))")) }
         let text = L10n.t(
-            "默认关闭。打开后会向 Anthropic 更换登录并写回钥匙串，走上面的同一条代理。关闭时过期后仍显示上次的官方数字。",
-            "Off by default. When on, it renews the login with Anthropic and writes it back, using the proxy above. When off, the last official numbers stay after expiry."
+            "默认开启。登录快过期时，按 Claude Code 相同的方式向 Anthropic 续期并写回钥匙串，走上面的同一条代理。关闭后，登录过期时只显示上次的官方数字。",
+            "On by default. Before the login expires, it renews it with Anthropic the same way Claude Code does and writes it back, using the proxy above. When off, the last official numbers stay after expiry."
         )
         return status.isEmpty ? text : text + "\n" + status.joined(separator: " · ")
     }
@@ -255,7 +282,7 @@ private struct DisplayPage: View {
                 DropdownButton(options: MenuBarMetric.allCases.map { ($0, $0.title) }, selection: $prefs.menuBarMetric)
             }
             Hairline()
-            SettingsRow(title: L10n.t("出口安全", "Exit safety"), detail: L10n.t("在数值右侧显示盾牌。面板上可以让官方请求只走 IPv4。IPv6 直连时盾牌变成严重警告。", "A shield beside the value. The panel can keep official requests on IPv4. A direct IPv6 connection turns the shield into a severe warning.")) {
+            SettingsRow(title: L10n.t("出口安全", "Exit safety"), detail: L10n.t("在数值右侧显示盾牌。官方请求只走 IPv4。IPv6 直连中国大陆、香港或澳门时，菜单栏会警告。", "A shield beside the value. Official requests use IPv4 only. A direct IPv6 connection from mainland China, Hong Kong, or Macau warns in the menu bar.")) {
                 SwitchToggle(isOn: $prefs.showExitSafety)
             }
 
@@ -298,7 +325,7 @@ private struct MenuBarPreview: View {
             primary: 0.42, secondary: 0.65, fraction: 0.42,
             showsSafety: prefs.showExitSafety,
             exitSafe: network.exitIsSafe,
-            ipv6Direct: network.ipv6IsDirect && !prefs.blockIPv6
+            ipv6Direct: network.ipv6IsDirect
         )
         HStack(spacing: 14) {
             Spacer()

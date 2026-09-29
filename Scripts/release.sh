@@ -22,4 +22,4 @@ fi
 
 git tag -a "$TAG" -m "Claude Usage Monitor $VERSION"
 git push origin HEAD "$TAG"
-echo "✓ 已推送 $TAG，GitHub Actions 会构建并发布 Release"
+echo "✓ 已推送 ${TAG}，GitHub Actions 会构建并发布 Release"

@@ -94,6 +94,8 @@ public struct UsageSnapshot: Sendable, Equatable {
     public var totalRecords: Int
     public var lifetimeCost: Double
     public var firstRecord: Date?
+    /// 最近一条记录的时间（用来判断 Claude Code 最近有没有消耗）
+    public var lastRecord: Date?
 
     public var today: DayUsage? { daily.last }
     public var hasData: Bool { totalRecords > 0 }
@@ -129,7 +131,8 @@ public enum UsageCalculator {
             daily: dailyUsage(records: records, costs: costs, calendar: cal, now: now, days: 30),
             totalRecords: records.count,
             lifetimeCost: costs.reduce(0, +),
-            firstRecord: records.first.map { Date(timeIntervalSince1970: $0.time) }
+            firstRecord: records.first.map { Date(timeIntervalSince1970: $0.time) },
+            lastRecord: records.last.map { Date(timeIntervalSince1970: $0.time) }
         )
     }
 

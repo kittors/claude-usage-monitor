@@ -224,13 +224,11 @@ final class OfficialUsageService {
     }
 
     enum Trigger {
-        /// 定时同步
-        case timer
-        /// 打开面板
-        case panel
-        /// 用户手动刷新 / 重新连接
+        /// 自动查询：时机由 `AutoSyncPolicy` 决定（Claude Code 正在使用时），这里再确认出口与间隔
+        case auto
+        /// 用户手动刷新 / 重新连接：只要求出口可用
         case manual
-        /// 等待用户完成登录：只读取钥匙串，间隔很短
+        /// 等待用户完成登录：先只读取钥匙串，登录后才发请求
         case login
     }
 
@@ -243,24 +241,28 @@ final class OfficialUsageService {
     private(set) var lastRenewal: Date?
     /// Claude Code 登录（refresh token）的有效期：到期后无法续期，需要重新登录
     private(set) var loginExpiresAt: Date?
+    /// 被限流后，直到这个时间都不再请求
+    private(set) var rateLimitedUntil = Date.distantPast
+    /// 手动刷新没有发出请求时的简短说明，几秒后消失
+    private(set) var notice: String?
+    /// 正在查询
+    private(set) var isFetching = false
 
     @ObservationIgnored var onChange: (() -> Void)?
-    /// 登录过期时自动续期（与偏好设置同步）
-    @ObservationIgnored var autoRenew = false
+    /// 登录快过期时自动续期（与偏好设置同步，默认开启）
+    @ObservationIgnored var autoRenew = true
     /// 非空时，用量和续期都从这里出去；空则使用系统代理
     @ObservationIgnored var outboundProxy: OutboundProxy?
-    /// 打开后，用量、续期和出口检查都只走 IPv4。
-    @ObservationIgnored var blockIPv6 = false
-    /// Claude Code 正在运行，或会话日志刚刚有写入
-    @ObservationIgnored var claudeActive = false
+    /// 官方请求固定走 IPv4，不向 Claude 发起 IPv6 连接。
+    @ObservationIgnored var blockIPv6 = true
     @ObservationIgnored private var credentials: ClaudeOAuth.Credentials?
-    @ObservationIgnored private var inFlight = false
-    @ObservationIgnored private var lastAttempt = Date.distantPast
+    /// 最近一次发出请求的时间（自动查询按它控制间隔）
+    @ObservationIgnored private(set) var lastAttempt = Date.distantPast
+    @ObservationIgnored private var lastTrigger: Trigger = .auto
     /// 失败后的重试时间（手动刷新不受限制）
     @ObservationIgnored private var retryAfter = Date.distantPast
-    /// 被限流后的退避时间（任何请求都要等待）
-    @ObservationIgnored private var rateLimitedUntil = Date.distantPast
     @ObservationIgnored private var rateLimitStreak = 0
+    @ObservationIgnored private var noticeWork: DispatchWorkItem?
     @ObservationIgnored private var lastProfileFetch = Date.distantPast
     /// 已被服务端拒绝的 refresh token：不再重复尝试，直到 Claude Code 重新登录
     @ObservationIgnored private var deadRefreshToken: String?
@@ -275,8 +277,8 @@ final class OfficialUsageService {
     nonisolated static let profileEndpoint = URL(string: "https://api.anthropic.com/api/oauth/profile")!
     nonisolated private static let log = Logger(subsystem: "io.github.kittors.ClaudeUsageMonitor", category: "official")
 
-    /// 接口大约每分钟允许一次。会话进行中的后台同步、打开面板、重置补拉都守这个间隔。
-    static let minimumSpacing: TimeInterval = 60
+    /// 任意两次请求的最短间隔（自动与手动都遵守）
+    static let minimumSpacing = AutoSyncPolicy.minimumSpacing
 
     func setEnabled(_ enabled: Bool) {
         if enabled {
@@ -291,41 +293,34 @@ final class OfficialUsageService {
         }
     }
 
-    func refresh(_ trigger: Trigger = .timer) {
-        guard state != .disabled, !inFlight else { return }
-        // 出口在中国大陆、香港或澳门，或还没确认位置时，不访问官方用量。
-        guard !NetworkPlace.shared.blocksOfficialUsage else { return }
+    /// 发起一次查询，返回是否真的发出了。发出前在后台先读登录，再用同一条线路确认出口。
+    @discardableResult
+    func refresh(_ trigger: Trigger) -> Bool {
+        guard state != .disabled, !isFetching else { return false }
         let now = Date()
-        guard now >= rateLimitedUntil else { return }
         let sinceAttempt = now.timeIntervalSince(lastAttempt)
         switch trigger {
-        case .timer:
-            guard state != .denied, now >= retryAfter else { return }
-            if state.awaitingLogin {
-                guard sinceAttempt >= Self.minimumSpacing else { return }
-            } else if windowHasReset(now) {
-                guard sinceAttempt >= Self.minimumSpacing else { return }
-            } else if claudeActive {
-                // 只在 Claude Code 正在使用时后台同步，节奏不超过接口允许的大约一分钟一次
-                guard sinceAttempt >= Self.minimumSpacing else { return }
-            } else {
-                return
-            }
-        case .panel:
-            if state.awaitingLogin {
-                // 等待登录时只读取钥匙串、不发请求：打开面板就检查一次，登录后立即恢复
-                guard sinceAttempt >= 3 else { return }
-            } else {
-                guard state != .denied, now >= retryAfter, sinceAttempt >= Self.minimumSpacing else { return }
-                if let usage, now.timeIntervalSince(usage.fetchedAt) < Self.minimumSpacing { return }
-            }
+        case .auto:
+            // 出口在中国大陆、香港或澳门，或还没确认位置时，不自动访问官方用量
+            guard !NetworkPlace.shared.blocksOfficialUsage, now >= rateLimitedUntil,
+                  state != .denied, now >= retryAfter, sinceAttempt >= Self.minimumSpacing else { return false }
         case .manual:
-            guard sinceAttempt >= 10 else { return }
+            if now < rateLimitedUntil {
+                let minutes = max(1, Int((rateLimitedUntil.timeIntervalSince(now) / 60).rounded(.up)))
+                flash(L10n.tNow("请求过于频繁，约 \(minutes) 分钟后可再试", "Too many requests. Try again in about \(minutes) min"))
+                return false
+            }
+            guard sinceAttempt >= Self.minimumSpacing else {
+                let seconds = max(1, Int((Self.minimumSpacing - sinceAttempt).rounded(.up)))
+                flash(L10n.tNow("刚刚查询过，\(seconds) 秒后可再试", "Just checked. Try again in \(seconds) s"))
+                return false
+            }
         case .login:
-            guard state.awaitingLogin, sinceAttempt >= 2 else { return }
+            guard state.awaitingLogin, now >= rateLimitedUntil, sinceAttempt >= 2 else { return false }
         }
-        inFlight = true
+        isFetching = true
         lastAttempt = now
+        lastTrigger = trigger
         let request = FetchRequest(
             cached: credentials,
             autoRenew: autoRenew,
@@ -337,10 +332,20 @@ final class OfficialUsageService {
         queue.async {
             let outcome = Self.fetch(request)
             DispatchQueue.main.async {
-                self.inFlight = false
+                self.isFetching = false
                 self.apply(outcome)
             }
         }
+        return true
+    }
+
+    /// 在状态栏位置显示几秒的说明（手动刷新没有发出请求时）
+    private func flash(_ message: String) {
+        notice = message
+        noticeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.notice = nil }
+        noticeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
     /// 在终端中打开登录后调用：每 3 秒检查一次钥匙串（最长 15 分钟），登录完成立即恢复
@@ -362,7 +367,7 @@ final class OfficialUsageService {
     }
 
     /// 上次同步之后，是否有窗口已经到了重置时间
-    private func windowHasReset(_ now: Date) -> Bool {
+    func windowHasReset(_ now: Date) -> Bool {
         guard let usage else { return false }
         return [usage.fiveHour?.resetsAt, usage.sevenDay?.resetsAt].contains { reset in
             guard let reset else { return false }
@@ -461,7 +466,12 @@ final class OfficialUsageService {
             state = .failed(message)
             retryAfter = now.addingTimeInterval(60)
         case .exitBlocked:
-            break
+            // 出口不可用，没有发出请求。手动刷新时说明原因
+            if lastTrigger == .manual {
+                flash(NetworkPlace.shared.place?.restrictsUsage == true
+                    ? L10n.tNow("出口在中国大陆、香港或澳门，没有查询", "The exit is in mainland China, Hong Kong, or Macau. Not checked")
+                    : L10n.tNow("无法确认出口，没有查询", "Could not confirm the exit. Not checked"))
+            }
         }
         // 等待登录期间状态不变的检查不重复记录
         if state != previous || !outcome.isLocal { Self.record(outcome, state: state, usage: usage) }
@@ -498,9 +508,6 @@ final class OfficialUsageService {
     nonisolated(unsafe) private static var forceRenewPending = ProcessInfo.processInfo.environment["CUM_FORCE_RENEW"] == "1"
 
     nonisolated private static func fetch(_ r: FetchRequest) -> Outcome {
-        let exit = ClaudeExit.probe(proxy: r.proxy, blockIPv6: r.blockIPv6)
-        DispatchQueue.main.async { NetworkPlace.shared.adopt(exit) }
-        guard let place = exit.place, !place.restrictsUsage else { return .exitBlocked }
         var renewed = false
         var current: ClaudeOAuth.Credentials
         if let cached = r.cached, !cached.needsRefresh() {
@@ -512,6 +519,16 @@ final class OfficialUsageService {
             case .failure(let failure): return .credentialFailure(failure)
             }
         }
+        // 登录已经过期又不能续期：不用发任何请求
+        if current.isExpired() {
+            if !(r.autoRenew && current.isRefreshable) { return .expired }
+            if let dead = r.deadRefreshToken, dead == current.refreshToken { return .signedOut(nil) }
+        }
+
+        // 发请求（续期或查询）之前，用同一条线路再确认一次出口
+        let exit = ClaudeExit.probe(proxy: r.proxy, blockIPv6: r.blockIPv6)
+        DispatchQueue.main.async { NetworkPlace.shared.adopt(exit) }
+        guard let place = exit.place, !place.restrictsUsage else { return .exitBlocked }
 
         // 与 Claude Code 一样，过期前 5 分钟就续期
         let force = forceRenewPending

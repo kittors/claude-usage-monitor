@@ -16,8 +16,8 @@ final class NetworkPlace {
     private(set) var failed = false
 
     @ObservationIgnored var proxy: OutboundProxy?
-    /// 打开后，用来确认用量出口的那次 trace 只走 IPv4。IPv6 探测仍单独进行，用来发现直连。
-    @ObservationIgnored var blockIPv6 = false
+    /// 确认用量出口的 trace 只走 IPv4。IPv6 探测仍单独进行，用来发现直连。
+    @ObservationIgnored var blockIPv6 = true
     @ObservationIgnored var onUpdate: (() -> Void)?
     @ObservationIgnored private var inFlight = false
 
@@ -33,8 +33,9 @@ final class NetworkPlace {
     /// IPv6 没有走代理，出口落在中国大陆、香港或澳门。
     var ipv6IsDirect: Bool { ipv6?.restrictsUsage == true }
 
-    func refreshIfStale() {
-        if let checkedAt, !failed, Date().timeIntervalSince(checkedAt) < 10 * 60 { return }
+    /// 上次确认超过 `maxAge` 才重新确认
+    func refreshIfStale(maxAge: TimeInterval = 10 * 60) {
+        if let checkedAt, !failed, Date().timeIntervalSince(checkedAt) < maxAge { return }
         refresh()
     }
 

@@ -1,76 +1,179 @@
+<div align="center">
+
+<img src="docs/images/icon.png" width="112" alt="Claude Usage Monitor icon">
+
 # Claude Usage Monitor
 
-[English](README.md) | [中文](README.zh-CN.md)
+**Your exact Claude limits, right in the menu bar.**
 
-A macOS menu bar app for Claude and Claude Code usage. It has no Dock icon. Click it for the 5-hour limit, the weekly limit, and what this Mac's Claude Code sessions would have cost at API prices.
+The same 5-hour and weekly numbers as Claude Code `/usage`, kept current while you work,<br>
+plus what your Claude Code sessions would cost at API prices. Native, private, and quiet.
 
-- Swift and SwiftUI, with the status item in AppKit
-- Limit percentages and reset times come from the same endpoint as Claude Code `/usage`
-- Cost and token detail come from local Claude Code session logs, priced from the official API list
-- The Claude logo, the Clawd mascot, and the small icons are drawn as vectors
+[![Release](https://img.shields.io/github/v/release/kittors/claude-usage-monitor?style=flat-square&color=D97757&label=release)](https://github.com/kittors/claude-usage-monitor/releases/latest)
+[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-2b2b2b?style=flat-square&logo=apple&logoColor=white)](#install)
+[![Swift 6](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)](Package.swift)
+[![License: MIT](https://img.shields.io/badge/license-MIT-4a4a4a?style=flat-square)](LICENSE)
+
+[**Download**](https://github.com/kittors/claude-usage-monitor/releases/latest) · [中文说明](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+
+<br>
+
+<img src="docs/images/en/hero.png" width="880" alt="The Claude Usage Monitor panel under the menu bar, next to its Display settings">
+
+</div>
+
+<br>
+
+## Highlights
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Official numbers, never estimates**<br>
+5-hour, weekly, and per-model limits come straight from the endpoint behind Claude Code `/usage`, rounded the same way.
+
+</td>
+<td width="50%" valign="top">
+
+**A menu bar that says what it shows**<br>
+5-hour by default. Add the week, Fable, or cost, and each value gets its own compact column with a small label, colored by how full it is.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Checks when it matters**<br>
+Only while Claude Code is in use, paced by how fast tokens go, and never within 10 seconds of the last check. Opening the panel refreshes right away.
+
+</td>
+<td valign="top">
+
+**Knows its way out**<br>
+Confirms the exit Anthropic sees before every request, pauses in mainland China, Hong Kong, or Macau, and warns if IPv6 goes out directly.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Spend you can read**<br>
+API-equivalent cost for this week, the billing month, or today, with the token mix, cache savings, a per-model split, and a 14-day trend.
+
+</td>
+<td valign="top">
+
+**Stays signed in**<br>
+Renews the Claude Code login the way Claude Code does, with the same locks, so the numbers never go stale. Shows running Claude sessions too.
+
+</td>
+</tr>
+</table>
+
+## Screenshots
+
+<table>
+<tr>
+<td width="40%" align="center" valign="top">
+<img src="docs/images/en/panel.png" alt="Menu bar panel"><br>
+<sub><b>The panel</b> · limits, spend, and processes</sub>
+</td>
+<td width="60%" align="center" valign="top">
+<img src="docs/images/en/settings-display.png" alt="Settings, Display"><br>
+<sub><b>Settings › Display</b> · pick what the menu bar shows</sub>
+</td>
+</tr>
+<tr>
+<td colspan="2" align="center">
+<img src="docs/images/en/settings-usage.png" width="560" alt="Settings, Usage"><br>
+<sub><b>Settings › Usage</b> · when to check, proxy, login renewal</sub>
+</td>
+</tr>
+</table>
 
 ## Install
 
-Download the latest `ClaudeUsageMonitor-<version>-macOS.zip` from [Releases](https://github.com/kittors/claude-usage-monitor/releases). Unzip it and move **Claude Usage Monitor.app** into Applications. Requires macOS 15 or later.
+Download `ClaudeUsageMonitor-<version>-macOS.zip` from the [latest release](https://github.com/kittors/claude-usage-monitor/releases/latest), unzip it, and move **Claude Usage Monitor.app** to Applications. macOS 15 or later.
 
-The build is not notarized, so the first open can be blocked. In **System Settings > Privacy & Security**, choose **Open Anyway**, or run:
+The build is not notarized, so macOS may block the first open. Choose **Open Anyway** in **System Settings › Privacy & Security**, or run:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Claude Usage Monitor.app"
 ```
 
-## What you see
+For the limits, sign in to Claude Code on this Mac once (`claude auth login`). After that the app finds the login by itself, and updates install from **Settings › General**.
 
-| Section | Contents |
-| --- | --- |
-| Limits | 5-hour, weekly (all models), and per-model weekly percentages (for example Fable), with reset times, shown the same way as `/usage`. If the Claude Code login is missing or expired, the panel says so and can run `claude auth login` in Terminal. |
-| Processes | Running Claude desktop and Claude Code sessions, in Terminal or in the desktop app, however Claude Code was installed. One row per session with its working directory and memory. Hover to force quit. |
-| Spend | API-equivalent cost for the current weekly quota window. Tabs switch that view to the billing month or to today. The range is printed to the second and ends on the last second of the window. Also requests, token totals, input / output / cache write / cache read, cache hit rate and the amount caching saved, cost by model, and a 14-day trend. |
-| Menu bar | Clawd or the Claude logo, plus values, a ring, or two bars. Values can be several at once: 5-hour (the default), week, per-model weekly limits such as Fable, and cost for today, this week, or this month. With more than one, each gets a small label above it. The color follows how full the limit is, from green through amber to red. A shield beside the value shows whether the Claude exit is outside mainland China, Hong Kong, and Macau. Clawd raises a hand when new data arrives. |
-| Alerts | A notification when 5-hour or weekly usage crosses your warning line, and another at 95%. |
+## How it works
 
-## Where the numbers come from
+<details>
+<summary><b>Limits come from Claude, not from a guess</b></summary>
+<br>
 
-**Limits.** The app reads the Claude Code login from the keychain and calls `GET https://api.anthropic.com/api/oauth/usage`. Percentages are rounded down, as in `/usage`: 71.9% is shown as 71%.
+The app reads the Claude Code login from the keychain and calls `GET https://api.anthropic.com/api/oauth/usage`, the endpoint behind Claude Code `/usage`. Percentages are rounded down the same way: 71.9% shows as 71%. A failed sync keeps the last official values and says when they were fetched. With no successful sync yet, the panel explains why and leaves the percentages blank.
 
-The endpoint is rate-limited: at one request a minute it starts returning HTTP 429 after a dozen or so. Automatic checks run only while Claude Code is in use: a Claude Code session is running, in Terminal or in the desktop app, and it used tokens in the last 5 minutes. **Settings > Usage > Check automatically** sets how often:
+</details>
 
-- **By token use** (default): check once the new usage since the last check reaches $0.50 at API prices, at least every 2 minutes while tokens keep going, and once more 15 seconds after they stop. After that it waits for new usage.
-- **A fixed interval:** every 10 seconds, 30 seconds, 1 minute, 2 minutes, or 5 minutes. Shorter intervals hit the rate limit sooner.
+<details>
+<summary><b>When it checks</b></summary>
+<br>
 
-While Claude Code is in use, the app also checks when a window resets, at launch, after wake, and when the exit becomes allowed again. Opening the menu bar panel refreshes once by default (**Settings > Usage > Check when the panel opens** turns this off). Like Refresh, it only needs an allowed exit, not Claude Code in use, and the refresh icon keeps turning until the new numbers arrive. Any two requests are at least 10 seconds apart. After a 429 it backs off for 5 to 30 minutes. A failed sync keeps the last official values and shows when they were fetched. With no successful sync yet, the panel shows the reason and leaves the percentages blank.
+The endpoint is rate-limited: at one request a minute it starts returning HTTP 429 after a dozen or so. Automatic checks run only while Claude Code is in use, meaning a session is running in Terminal or in the desktop app and it used tokens in the last 5 minutes. **Settings › Usage › Check automatically** sets how often:
 
-Before each request the app checks the exit that `api.anthropic.com` sees. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, the request is not sent. Official requests use IPv4. If an IPv6 connection to Claude comes directly from mainland China, Hong Kong, or Macau, the panel and the menu bar show a severe warning.
+- **By token use** (default). Check once new usage since the last check reaches $0.50 at API prices, at least every 2 minutes while tokens keep going, and once more 15 seconds after they stop.
+- **A fixed interval** of 10 seconds, 30 seconds, 1 minute, 2 minutes, or 5 minutes. Shorter intervals hit the rate limit sooner.
 
-**Login renewal.** A Claude Code access token lasts about 8 hours, and the Claude Code CLI is what refreshes it. The desktop app uses a different login, so this keychain item goes stale if you never run the CLI. **Settings > Usage > Renew login automatically** is on by default. About 5 minutes before expiry, the app renews the token the same way Claude Code does:
+While Claude Code is in use, the app also checks when a window resets, at launch, after wake, and when the exit becomes allowed again. Opening the panel checks right away (**Check when the panel opens**, on by default). Like **Refresh**, that only needs an allowed exit, and the refresh icon keeps turning until the new numbers arrive. Any two requests are at least 10 seconds apart. After a 429 it backs off for 5 to 30 minutes.
 
-- It takes the same locks (`~/.claude/.oauth_refresh.lock`, `~/.claude.lock`, `~/.claude/.storage-write.lock`), so it does not refresh at the same time as Claude Code.
-- Refreshing invalidates the previous refresh token. The app checks that the keychain item can be written, writes it, then reads it back.
-- Only the `claudeAiOauth` tokens are replaced. Everything else in the item, including MCP server logins, is left as it was.
+</details>
+
+<details>
+<summary><b>The exit check</b></summary>
+<br>
+
+Before each request the app asks `api.anthropic.com` which exit it sees, over the same connection the request will use. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, nothing is sent. Official requests use IPv4 only. If an IPv6 connection to Claude goes out directly from one of those regions, the panel and the menu bar show a severe warning.
+
+</details>
+
+<details>
+<summary><b>Login renewal</b></summary>
+<br>
+
+A Claude Code access token lasts about 8 hours, and only the Claude Code CLI refreshes it. The desktop app uses a different login, so this keychain item goes stale if you never run the CLI. With **Renew login automatically** (on by default), the app renews it about 5 minutes before expiry, exactly as Claude Code does:
+
+- It takes the same locks (`~/.claude/.oauth_refresh.lock`, `~/.claude.lock`, `~/.claude/.storage-write.lock`), so it never refreshes at the same time as Claude Code.
+- Refreshing invalidates the previous refresh token, so the app first checks that the keychain item can be written, then writes it and reads it back.
+- Only the `claudeAiOauth` tokens are replaced. Everything else in the item, including MCP server logins, stays as it was.
 - If Claude Code refreshes or signs in during the attempt, the app keeps that result.
 
-The Claude Code login has its own expiry, shown in Settings. Once that date passes, or you sign out elsewhere, renewal is rejected and Claude Code clears the item. The panel then offers **Sign in with Claude Code in Terminal**, which runs `claude auth login`. After you finish in the browser, the app picks up the new login.
+The login itself also expires, on the date shown in Settings. After that, or after you sign out elsewhere, the panel offers **Sign in with Claude Code in Terminal**, which runs `claude auth login`.
 
-**Cost and tokens.** Session logs under `~/.claude/projects/**/*.jsonl` are parsed incrementally, including sub-agent logs.
+</details>
 
-- A streaming message is written as several lines, and the middle lines only have a partial `output_tokens`. Rows are deduplicated on `message.id` plus `requestId`, and the final output count is the one that is kept. Keeping the first line undercounts output.
-- Prices follow the published list: 5-minute cache writes at 1.25x, 1-hour cache writes at 2x, cache reads at the per-model rate (Fable 5.1 at $0.25, Opus 5.5 at $0.20).
+<details>
+<summary><b>Cost and tokens</b></summary>
+<br>
+
+Session logs under `~/.claude/projects/**/*.jsonl`, including sub-agent logs, are parsed incrementally.
+
+- A streaming message is written as several lines, and the middle lines only carry a partial `output_tokens`. Rows are deduplicated on `message.id` plus `requestId`, keeping the final count.
+- Prices follow the published list: 5-minute cache writes at 1.25x, 1-hour cache writes at 2x, and cache reads at each model's rate.
 - The totals match Claude Code's own `cost-state` records.
 
-These logs are Claude Code on this Mac. claude.ai, the mobile apps, and other computers still count in the official percentages.
+The week follows the official weekly `resets_at`, to the second. The billing month uses your billing day on the same clock. Today is the local calendar day. These logs cover Claude Code on this Mac only, while claude.ai, the mobile apps, and other computers still count in the official percentages.
 
-**Spend windows.** The week follows the official weekly `resets_at`, every 7 days, to the second. The billing month uses the day you set and that same clock. Today is the local calendar day, `00:00:00` through `23:59:59`.
+</details>
 
 ## Privacy
 
-- Credentials stay in memory. They go only to Anthropic: `api.anthropic.com` for usage, `platform.claude.com` to renew the login. They are not written to the log.
-- The keychain item `Claude Code-credentials` is read and written with `/usr/bin/security`, which is how Claude Code itself does it. The item trusts `security`. Each time Claude Code rewrites it, other apps lose keychain access, and reading through the Keychain API asks for your password again after every renewal.
-- The renewal write uses the same shape Claude Code writes. With automatic renewal off, the app only reads.
-- Session logs stay on this Mac.
+- Credentials stay in memory and go only to Anthropic: `api.anthropic.com` for usage, `platform.claude.com` to renew the login. They are never logged.
+- The keychain item `Claude Code-credentials` is read and written with `/usr/bin/security`, the same way Claude Code does it. That item trusts `security`, and each rewrite by Claude Code resets other apps' access, so going through the Keychain API would ask for your password after every renewal.
+- With automatic renewal off, the app only reads the login.
+- Session logs never leave this Mac.
 
-## Build
+## Build from source
 
-macOS 15 or later, and Xcode 16 or later (the Swift 6 toolchain).
+macOS 15 or later and Xcode 16 or later (Swift 6 toolchain).
 
 ```bash
 make app       # build/Claude Usage Monitor.app (release)
@@ -81,23 +184,33 @@ make test      # unit tests
 make dist      # zip for a release
 ```
 
-The script signs with an Apple Development certificate when you have one, and uses ad-hoc signing otherwise. `CODESIGN_IDENTITY` overrides that. Launch at login uses `SMAppService`. Run `make install` before turning it on.
+The build script signs with an Apple Development certificate when one is available and falls back to ad-hoc signing. `CODESIGN_IDENTITY` overrides it. **Launch at login** uses `SMAppService`, so run `make install` before turning it on.
 
-## Release
+<details>
+<summary><b>Releasing</b></summary>
+<br>
 
 1. Add `## [x.y.z] - YYYY-MM-DD` at the top of `CHANGELOG.md`, in English.
 2. Run `make release VERSION=x.y.z`. It runs the tests, sets the version, tags, and pushes.
-3. `.github/workflows/release.yml` builds the zip from that tag and publishes the GitHub Release from the matching changelog section.
+3. `.github/workflows/release.yml` builds the zip from the tag and publishes the release with the matching changelog section.
 
-## Performance
+</details>
 
-The first launch scans the logs and builds an index: about 5 seconds for 5 GB and roughly 840,000 lines. After that:
+<details>
+<summary><b>Performance</b></summary>
+<br>
 
-- The index is a compact binary in `~/Library/Application Support/ClaudeUsageMonitor/`, and loads in about 20 ms.
-- FSEvents watches the log directories and reads only new bytes. An incremental update is about 40 ms.
-- Computing the spend figures is about 60 ms. The index keeps rows after Claude Code deletes old logs.
+The first launch indexes every log, about 5 seconds for 5 GB and roughly 840,000 lines. After that:
 
-## Layout
+- The index is a compact binary in `~/Library/Application Support/ClaudeUsageMonitor/` that loads in about 20 ms.
+- FSEvents watches the log folders and only new bytes are read, about 40 ms per update.
+- Spend figures take about 60 ms to compute, and the index keeps history after Claude Code deletes old logs.
+
+</details>
+
+<details>
+<summary><b>Project layout</b></summary>
+<br>
 
 ```
 Sources/
@@ -106,6 +219,7 @@ Sources/
     UsageIndex.swift         dedup, session metadata, file cursors, binary cache
     UsageCalculator.swift    week, billing month, today, daily trend
     OfficialUsage.swift      usage endpoint model
+    AutoSync.swift           when to check official usage
     ClaudeOAuth.swift        credential parse, refresh request, write-back merge
     CredentialRenewal.swift  lock, re-check, write preflight, read-back
     DirectoryLock.swift      directory lock compatible with Claude Code
@@ -113,14 +227,15 @@ Sources/
     Formatting.swift         number units, currency, countdown
   ClaudeUsageMonitor/        menu bar app
     App/                     status item, panel, icon drawing, settings window
-    Services/                preferences, index, official usage, keychain, login, FSEvents, alerts
+    Services/                preferences, index, official usage, keychain, login, processes, updates
     Design/                  color, SVG renderer, icons, Claude logo, Clawd
     Views/                   panel and settings
-Tests/UsageCoreTests/        parse, dedup, pricing, windows, usage JSON, login renewal
-Scripts/build-app.sh         assemble the .app
-Scripts/release.sh           tag and push; GitHub Actions publishes
+Tests/UsageCoreTests/        parsing, dedup, pricing, windows, usage JSON, login renewal, check timing
+Scripts/                     build the .app, tag a release
 .github/workflows/           CI and release
 ```
+
+</details>
 
 ## License
 

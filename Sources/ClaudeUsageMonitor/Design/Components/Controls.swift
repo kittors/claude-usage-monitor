@@ -24,6 +24,8 @@ struct FooterButton: View {
     let icon: Icon
     let title: String
     var rotation: Double = 0
+    /// 图标右上角的小圆点（例如有新版本）
+    var badge = false
     let action: () -> Void
 
     @State private var hovering = false
@@ -33,6 +35,17 @@ struct FooterButton: View {
             HStack(spacing: 5) {
                 SVGIcon(icon, size: 12.5)
                     .rotationEffect(.degrees(rotation))
+                    .overlay(alignment: .topTrailing) {
+                        if badge {
+                            Circle()
+                                .fill(Palette.accent)
+                                .frame(width: 6, height: 6)
+                                .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 1))
+                                .offset(x: 3, y: -2.5)
+                                .transition(.scale(scale: 0.4).combined(with: .opacity))
+                        }
+                    }
+                    .animation(.quiet, value: badge)
                 Text(title)
                     .font(.system(size: 11.5, weight: .regular))
             }

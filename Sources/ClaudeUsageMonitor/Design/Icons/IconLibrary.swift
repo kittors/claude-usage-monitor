@@ -10,7 +10,7 @@ enum Icon: String, CaseIterable {
     case chevronDown, chevronLeft, chevronRight, check, close, plus, minus
     case cpu, flame, sparkles, terminal, branch, warning, clock, globe
     case pulse, menuBar, crosshair, database, external, wand, trendUp
-    case message, hexagon
+    case message, hexagon, upgrade
 
     var markup: String {
         let body: String
@@ -137,6 +137,11 @@ enum Icon: String, CaseIterable {
             <path d="M12.3 15.6v3.2l3.3-2.3v-4"/>
             <circle cx="15.4" cy="8.6" r="1.4"/>
             <path d="M6.6 16.2c-1.4.6-2.2 2.6-2.2 3.4.8 0 2.8-.8 3.4-2.2"/>
+            """
+        case .upgrade: body = """
+            <circle cx="12" cy="12" r="8.6" fill="currentColor" fill-opacity=".16"/>
+            <path d="M12 16.4V7.9"/>
+            <path d="m8.3 11.5 3.7-3.6 3.7 3.6"/>
             """
         case .info: body = """
             <circle cx="12" cy="12" r="8.6"/>

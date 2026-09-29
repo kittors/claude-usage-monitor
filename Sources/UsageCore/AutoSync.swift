@@ -57,8 +57,6 @@ public enum AutoSyncPolicy {
     public enum Occasion: Sendable, Equatable {
         /// 定时检查
         case tick
-        /// 打开面板
-        case panelOpened
         /// 启动、从睡眠唤醒、出口恢复可用：正在使用就查一次
         case resume
     }
@@ -76,11 +74,10 @@ public enum AutoSyncPolicy {
 
     /// - Parameters:
     ///   - lastRequest: 上一次向官方发出请求的时间（自动或手动）
-    ///   - lastSync: 当前显示的官方数据的获取时间
     ///   - windowReset: 上次同步之后，5 小时或每周窗口已经到了重置时间
     public static func shouldSync(
         mode: AutoSyncMode, occasion: Occasion, activity: Activity,
-        lastRequest: Date?, lastSync: Date?, windowReset: Bool, now: Date
+        lastRequest: Date?, windowReset: Bool, now: Date
     ) -> Bool {
         guard isInUse(activity, now: now) else { return false }
         let sinceRequest = lastRequest.map { now.timeIntervalSince($0) } ?? .infinity
@@ -88,8 +85,6 @@ public enum AutoSyncPolicy {
         switch occasion {
         case .resume:
             return true
-        case .panelOpened:
-            return lastSync.map { now.timeIntervalSince($0) >= minimumSpacing } ?? true
         case .tick:
             if windowReset { return true }
             if let interval = mode.interval { return sinceRequest >= interval }

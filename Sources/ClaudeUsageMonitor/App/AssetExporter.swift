@@ -37,12 +37,28 @@ enum AssetExporter {
         }
 
         // 菜单栏图标预览（@4x，便于检查像素对齐）
+        typealias Value = StatusIconRenderer.Value
+        let one = [Value(label: "5小时", text: "71%", fraction: 0.71)]
+        let several = [
+            Value(label: "5小时", text: "4%", fraction: 0.04),
+            Value(label: "本周", text: "98%", fraction: 0.98),
+            Value(label: "Fable", text: "0%", fraction: 0),
+            Value(label: "今日", text: "$776", fraction: nil),
+        ]
+        let english = [
+            Value(label: "5H", text: "4%", fraction: 0.04),
+            Value(label: "WEEK", text: "98%", fraction: 0.98),
+            Value(label: "FABLE", text: "0%", fraction: 0),
+        ]
         for (name, input) in [
-            ("menubar-mascot", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71)),
-            ("menubar-mascot-armsup", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71, pose: .armsUp)),
-            ("menubar-logo", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71)),
-            ("menubar-ring", StatusIconRenderer.Input(icon: .mascot, style: .ringPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71)),
-            ("menubar-bars-warning", StatusIconRenderer.Input(icon: .mascot, style: .dualBars, text: nil, primary: 0.86, secondary: 0.65, fraction: 0.86)),
+            ("menubar-mascot", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-mascot-armsup", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71, pose: .armsUp)),
+            ("menubar-logo", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-ring", StatusIconRenderer.Input(icon: .mascot, style: .ringPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-bars-warning", StatusIconRenderer.Input(icon: .mascot, style: .dualBars, values: [], primary: 0.86, secondary: 0.65, fraction: 0.86)),
+            ("menubar-stacked", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, showsSafety: true, exitSafe: true, onDarkMenuBar: false)),
+            ("menubar-stacked-dark", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, showsSafety: true, exitSafe: true, onDarkMenuBar: true)),
+            ("menubar-stacked-en-dark", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, values: english, primary: 0.04, secondary: 0.98, fraction: 0.98, onDarkMenuBar: true)),
         ] {
             let image = StatusIconRenderer.image(input)
             let scale: CGFloat = 4
@@ -54,7 +70,7 @@ enum AssetExporter {
             rep.size = image.size
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            NSColor.white.setFill()
+            (name.hasSuffix("-dark") ? NSColor(white: 0.12, alpha: 1) : NSColor.white).setFill()
             NSRect(origin: .zero, size: image.size).fill()
             image.draw(in: NSRect(origin: .zero, size: image.size))
             NSGraphicsContext.restoreGraphicsState()

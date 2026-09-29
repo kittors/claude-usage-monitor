@@ -92,7 +92,7 @@ final class MenuBarController: NSObject {
         withObservationTracking {
             _ = prefs.menuBarIcon
             _ = prefs.menuBarStyle
-            _ = prefs.menuBarMetric
+            _ = prefs.menuBarItems
             _ = prefs.showExitSafety
             _ = prefs.warningThreshold
             _ = NetworkPlace.shared.place
@@ -116,32 +116,22 @@ final class MenuBarController: NSObject {
     }
 
     private func renderIcon() {
-        let snap = store.snapshot
         // 百分比只用官方数据：没有官方数据时显示「–」，不做估算
         let rows = store.limitRows
         let five = rows.first { $0.id == "five" }
         let week = rows.first { $0.id == "week" }
         let money = prefs.money
-        let text: String? = switch prefs.menuBarMetric {
-        case .fiveHour: five.map { "\($0.percent)%" }
-        case .weekly: week.map { "\($0.percent)%" }
-        case .today: snap.map { money.compact($0.day.cost) }
-        case .week: snap?.week.map { money.compact($0.cost) }
-        case .cycle: snap.map { money.compact($0.billing.cost) }
-        }
-        let primary = (prefs.menuBarMetric == .weekly ? week : five)?.fraction ?? 0
+        let items = prefs.orderedMenuBarItems
+        let values = items.map { store.menuBarValue($0, money: money) ?? .init(label: $0.shortLabel, text: "–", fraction: nil) }
+        let shownLimits = values.compactMap(\.fraction)
         let worst = max(five?.fraction ?? 0, week?.fraction ?? 0)
-        let fraction: Double? = (five == nil && week == nil) ? nil : {
-            switch prefs.menuBarMetric {
-            case .fiveHour: five?.fraction ?? worst
-            case .weekly: week?.fraction ?? worst
-            default: worst
-            }
-        }()
+        // 图标颜色跟着显示出来的限额里最满的一个；只显示费用时看 5 小时和本周
+        let fraction: Double? = shownLimits.max() ?? ((five == nil && week == nil) ? nil : worst)
+        let primary = shownLimits.first ?? five?.fraction ?? 0
         let network = NetworkPlace.shared
         let known = network.place != nil || network.failed
         let input = StatusIconRenderer.Input(
-            icon: prefs.menuBarIcon, style: prefs.menuBarStyle, text: text ?? "–",
+            icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
             primary: primary, secondary: week?.fraction ?? 0, fraction: fraction,
             pose: iconInput?.pose ?? .idle,
             showsSafety: (prefs.showExitSafety && known) || network.ipv6IsDirect,
@@ -151,15 +141,11 @@ final class MenuBarController: NSObject {
         )
         iconInput = input
         statusItem.button?.image = StatusIconRenderer.image(input)
-        var tip: [String] = []
-        if let five, let week {
-            tip.append(L10n.t("5 小时 \(five.percent)% · 本周 \(week.percent)%", "5-hour \(five.percent)% · Week \(week.percent)%"))
-        } else if let five {
-            tip.append(L10n.t("5 小时 \(five.percent)%", "5-hour \(five.percent)%"))
-        } else if prefs.officialUsageEnabled {
+        // 悬停说明：菜单栏上每个数值的完整含义
+        var tip = zip(items, values).map { item, value in "\(item.title) \(value.text)" }
+        if rows.isEmpty, prefs.officialUsageEnabled {
             tip.append(L10n.t("官方用量：\(LimitsSection.shortReason(store.official.state))", "Official usage: \(LimitsSection.shortReason(store.official.state))"))
         }
-        if let weekCost = snap?.week { tip.append(L10n.t("本周 \(money.string(weekCost.cost))", "This week \(money.string(weekCost.cost))")) }
         if network.ipv6IsDirect {
             tip.append(L10n.t("严重警告：IPv6 直连中国大陆、香港或澳门", "Severe warning: IPv6 connects directly from mainland China, Hong Kong, or Macau"))
         } else if prefs.showExitSafety, known {
@@ -197,6 +183,11 @@ final class MenuBarController: NSObject {
         let actions = PopoverActions(
             openSettings: { [weak self] in
                 self?.hide()
+                self?.openSettings()
+            },
+            openUpdate: { [weak self] in
+                self?.hide()
+                SettingsNavigation.shared.showUpdate()
                 self?.openSettings()
             },
             quit: { NSApp.terminate(nil) },

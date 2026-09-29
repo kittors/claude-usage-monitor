@@ -24,16 +24,35 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// 设置窗口当前的标签页。面板上的新版本提示会直接打开「通用」并高亮「软件更新」。
+@MainActor
+@Observable
+final class SettingsNavigation {
+    static let shared = SettingsNavigation()
+
+    var tab: SettingsTab = .usage
+    /// 每次从新版本提示进入都会变化，更新一栏据此高亮一下
+    private(set) var updateHighlight = 0
+    @ObservationIgnored var handledHighlight = 0
+
+    func showUpdate() {
+        tab = .general
+        updateHighlight += 1
+        AppUpdate.shared.showNotes()
+    }
+}
+
 /// 设置窗口：与弹窗一致的暗色毛玻璃 + 顶部图标标签页。
 struct SettingsView: View {
     @Bindable var prefs: Preferences
     let store: UsageStore
 
-    @State private var tab: SettingsTab = .usage
+    @Bindable private var navigation = SettingsNavigation.shared
 
     var body: some View {
+        let tab = navigation.tab
         VStack(spacing: 0) {
-            TabBar(selection: $tab)
+            TabBar(selection: $navigation.tab)
                 .padding(.top, 12)
                 .padding(.bottom, 10)
             Hairline()
@@ -41,7 +60,7 @@ struct SettingsView: View {
                 Group {
                     switch tab {
                     case .usage: UsagePage(prefs: prefs, store: store)
-                    case .display: DisplayPage(prefs: prefs)
+                    case .display: DisplayPage(prefs: prefs, store: store)
                     case .data: DataPage(prefs: prefs, store: store)
                     case .general: GeneralPage(prefs: prefs, store: store)
                     }
@@ -115,6 +134,15 @@ private struct UsagePage: View {
                 SwitchToggle(isOn: $prefs.officialUsageEnabled)
             }
             if prefs.officialUsageEnabled {
+                Hairline()
+                SettingsRow(
+                    title: L10n.t("展开面板时立即查询", "Check when the panel opens"),
+                    detail: prefs.refreshOnOpen
+                        ? L10n.t("点开菜单栏图标时立即查询一次，只要求出口可用；10 秒内不重复查询。", "Checks right away when you open the menu bar panel. Only needs an allowed exit. Not repeated within 10 seconds.")
+                        : L10n.t("已关闭：展开面板只显示上次的结果，按下方的自动查询频率更新，也可以点「立即刷新」。", "Off: opening the panel shows the last numbers. They update as set below, or with Refresh.")
+                ) {
+                    SwitchToggle(isOn: $prefs.refreshOnOpen)
+                }
                 Hairline()
                 SettingsRow(title: L10n.t("自动查询", "Check automatically"), detail: autoSyncDetail) {
                     DropdownButton(options: AutoSyncMode.allCases.map { ($0, $0.title) }, selection: $prefs.autoSyncMode)
@@ -264,11 +292,14 @@ private struct UsagePage: View {
 
 private struct DisplayPage: View {
     @Bindable var prefs: Preferences
+    let store: UsageStore
+    /// 指针停在哪个数值方块上：上方的预览据此突出这一列，或预览加入它之后的样子
+    @State private var hoveredItem: MenuBarItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsHeader(title: L10n.t("菜单栏", "Menu bar"))
-            MenuBarPreview(prefs: prefs)
+            MenuBarPreview(prefs: prefs, store: store, hovered: hoveredItem)
                 .padding(.vertical, 12)
             SettingsRow(title: L10n.t("图标", "Icon")) {
                 PillSegmented(options: MenuBarIcon.allCases.map { ($0, $0 == .mascot ? "Clawd" : L10n.t("Claude 标志", "Claude logo")) }, selection: $prefs.menuBarIcon)
@@ -277,9 +308,9 @@ private struct DisplayPage: View {
             SettingsRow(title: L10n.t("样式", "Style")) {
                 DropdownButton(options: MenuBarStyle.allCases.map { ($0, $0.title) }, selection: $prefs.menuBarStyle)
             }
-            Hairline()
-            SettingsRow(title: L10n.t("显示数值", "Menu bar value")) {
-                DropdownButton(options: MenuBarMetric.allCases.map { ($0, $0.title) }, selection: $prefs.menuBarMetric)
+            if prefs.menuBarStyle == .iconPercent || prefs.menuBarStyle == .ringPercent {
+                Hairline()
+                MenuBarItemsRow(prefs: prefs, store: store, hovered: $hoveredItem)
             }
             Hairline()
             SettingsRow(title: L10n.t("出口安全", "Exit safety"), detail: L10n.t("在数值右侧显示盾牌。官方请求只走 IPv4。IPv6 直连中国大陆、香港或澳门时，菜单栏会警告。", "A shield beside the value. Official requests use IPv4 only. A direct IPv6 connection from mainland China, Hong Kong, or Macau warns in the menu bar.")) {
@@ -313,16 +344,182 @@ private struct DisplayPage: View {
     }
 }
 
-/// 菜单栏效果的实时预览
+/// 菜单栏显示哪些数值：一条和菜单栏一样的深色小条，每个数值一列（小标签 + 数值），亮起的就会显示在菜单栏上
+private struct MenuBarItemsRow: View {
+    @Bindable var prefs: Preferences
+    let store: UsageStore
+    @Binding var hovered: MenuBarItem?
+    /// 想取消最后一项时轻轻晃一下
+    @State private var refused: MenuBarItem?
+    @State private var refusals = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.t("显示数值", "Menu bar values"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.text)
+                Text(L10n.t("亮起的会显示在菜单栏上，点一下切换，可以多选。", "Lit values appear in the menu bar. Click to toggle. Pick one or more."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 2) {
+                ForEach(limits) { column($0) }
+                Capsule()
+                    .fill(Color.white.opacity(0.1))
+                    .frame(width: 1, height: 20)
+                    .padding(.horizontal, 5)
+                ForEach([MenuBarItem.todayCost, .weekCost, .monthCost]) { column($0) }
+            }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.black.opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5))
+        }
+        .padding(.vertical, 11)
+    }
+
+    /// 5 小时、本周，以及账号里有单独周额度的模型；已选但暂时没有数据的模型也列出来，方便取消
+    private var limits: [MenuBarItem] {
+        var names = store.limitModels
+        for case .model(let name) in prefs.menuBarItems where !names.contains(name) { names.append(name) }
+        return [.fiveHour, .weekly] + names.map { .model($0) }
+    }
+
+    private func column(_ item: MenuBarItem) -> some View {
+        ValueToggle(
+            item: item,
+            value: store.menuBarValue(item, money: prefs.money) ?? Self.sample(item, money: prefs.money),
+            selected: prefs.menuBarItems.contains(item),
+            refusals: refused == item ? refusals : 0,
+            hovered: $hovered
+        ) { toggle(item) }
+    }
+
+    private func toggle(_ item: MenuBarItem) {
+        if let index = prefs.menuBarItems.firstIndex(of: item) {
+            // 至少保留一个；只要图标可以把样式改成「仅图标」
+            guard prefs.menuBarItems.count > 1 else {
+                refused = item
+                withAnimation(.linear(duration: 0.4)) { refusals += 1 }
+                return
+            }
+            withAnimation(.snappy(duration: 0.22)) { _ = prefs.menuBarItems.remove(at: index) }
+        } else {
+            withAnimation(.snappy(duration: 0.22)) { prefs.menuBarItems.append(item) }
+        }
+    }
+
+    /// 还没有数据时的示意数值
+    static func sample(_ item: MenuBarItem, money: MoneyFormat) -> StatusIconRenderer.Value {
+        switch item {
+        case .fiveHour: .init(label: item.shortLabel, text: "42%", fraction: 0.42)
+        case .weekly: .init(label: item.shortLabel, text: "68%", fraction: 0.68)
+        case .model: .init(label: item.shortLabel, text: "12%", fraction: 0.12)
+        case .todayCost: .init(label: item.shortLabel, text: money.compact(12), fraction: nil)
+        case .weekCost: .init(label: item.shortLabel, text: money.compact(86), fraction: nil)
+        case .monthCost: .init(label: item.shortLabel, text: money.compact(1234), fraction: nil)
+        }
+    }
+}
+
+/// 小条里的一列：和菜单栏上的样子一样。选中时亮起并上色，没选时变灰变暗，指针停上去半亮
+private struct ValueToggle: View {
+    let item: MenuBarItem
+    let value: StatusIconRenderer.Value
+    let selected: Bool
+    let refusals: Int
+    @Binding var hovered: MenuBarItem?
+    let toggle: () -> Void
+
+    var body: some View {
+        let isHovered = hovered == item
+        Button(action: toggle) {
+            VStack(spacing: 0) {
+                Text(value.label)
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.62))
+                Text(value.text)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tone)
+                    .contentTransition(.numericText())
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(selected ? (isHovered ? 0.11 : 0.07) : (isHovered ? 0.05 : 0)))
+            )
+            .saturation(selected || isHovered ? 1 : 0)
+            .opacity(selected ? 1 : (isHovered ? 0.7 : 0.3))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TileButtonStyle())
+        .modifier(Shake(travel: CGFloat(refusals)))
+        .onHover { inside in
+            withAnimation(.quiet) {
+                if inside { hovered = item } else if hovered == item { hovered = nil }
+            }
+        }
+        .help(item.title)
+    }
+
+    private var tone: Color {
+        guard let fraction = value.fraction else { return Palette.text }
+        let rgb = UsageTone.tone(for: fraction).components
+        return Color(.sRGB, red: rgb.red, green: rgb.green, blue: rgb.blue)
+    }
+}
+
+/// 按下时轻轻缩一下，不改变颜色
+private struct TileButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+/// 左右晃动（travel 每加 1 晃一轮）
+private struct Shake: GeometryEffect {
+    var travel: CGFloat
+    var animatableData: CGFloat {
+        get { travel }
+        set { travel = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: 4 * sin(travel * .pi * 6), y: 0))
+    }
+}
+
+/// 菜单栏效果的实时预览：用当前的真实数值；指针停在数值方块上时，突出那一列，或先放进来看看效果
 private struct MenuBarPreview: View {
     let prefs: Preferences
+    let store: UsageStore
+    var hovered: MenuBarItem?
 
     var body: some View {
         let network = NetworkPlace.shared
+        let money = prefs.money
+        let selected = prefs.menuBarItems
+        let showsValues = prefs.menuBarStyle == .iconPercent || prefs.menuBarStyle == .ringPercent
+        let candidate = showsValues ? hovered.flatMap { selected.contains($0) ? nil : $0 } : nil
+        let items = MenuBarItem.ordered(selected + (candidate.map { [$0] } ?? []))
+        let values: [StatusIconRenderer.Value] = items.map { item in
+            var value = store.menuBarValue(item, money: money) ?? MenuBarItemsRow.sample(item, money: money)
+            if item == candidate {
+                value.emphasis = 0.4
+            } else if let hovered, selected.contains(hovered), selected.count > 1, item != hovered {
+                value.emphasis = 0.3
+            }
+            return value
+        }
+        let limits = values.compactMap(\.fraction)
         let input = StatusIconRenderer.Input(
-            icon: prefs.menuBarIcon, style: prefs.menuBarStyle,
-            text: prefs.menuBarMetric == .today || prefs.menuBarMetric == .cycle ? prefs.money.compact(1234) : "42%",
-            primary: 0.42, secondary: 0.65, fraction: 0.42,
+            icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
+            primary: limits.first ?? 0.42, secondary: 0.65, fraction: limits.max() ?? 0.42,
             showsSafety: prefs.showExitSafety,
             exitSafe: network.exitIsSafe,
             ipv6Direct: network.ipv6IsDirect
@@ -484,6 +681,8 @@ private struct GeneralPage: View {
 
 private struct UpdateSettingsRow: View {
     @State private var hovering = false
+    /// 从面板的新版本提示进入时轻轻高亮一下，告诉用户更新在这里
+    @State private var highlighted = false
 
     var body: some View {
         let update = AppUpdate.shared
@@ -508,7 +707,13 @@ private struct UpdateSettingsRow: View {
                 }
                 Spacer(minLength: 12)
                 if update.canInstall {
-                    QuietButton(title: L10n.t("更新", "Update"), prominent: true) { update.install() }
+                    HStack(spacing: 8) {
+                        if !update.isIgnored {
+                            QuietButton(title: L10n.t("忽略", "Skip")) { withAnimation(.quiet) { update.ignoreAvailableVersion() } }
+                                .help(L10n.t("只忽略这个版本，出了新的版本会再提醒", "Skips only this version. A newer one will be shown again."))
+                        }
+                        QuietButton(title: L10n.t("更新", "Update"), prominent: true) { update.install() }
+                    }
                 } else if case .downloading = update.phase {
                     EmptyView()
                 } else {
@@ -523,6 +728,19 @@ private struct UpdateSettingsRow: View {
             }
         }
         .padding(.vertical, 11)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Palette.accent.opacity(highlighted ? 0.12 : 0))
+                .padding(.horizontal, -12)
+        )
+        .task(id: SettingsNavigation.shared.updateHighlight) {
+            let navigation = SettingsNavigation.shared
+            guard navigation.updateHighlight != navigation.handledHighlight else { return }
+            navigation.handledHighlight = navigation.updateHighlight
+            withAnimation(.easeOut(duration: 0.3)) { highlighted = true }
+            try? await Task.sleep(for: .seconds(1.6))
+            withAnimation(.easeOut(duration: 0.9)) { highlighted = false }
+        }
     }
 }
 
@@ -543,41 +761,48 @@ struct DownloadProgress: View {
 
 private struct ReleaseNotes: View {
     let update: AppUpdate
+    @State private var hoveringLink = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(update.notesVersion.map { L10n.t("版本 \($0)", "Version \($0)") } ?? L10n.t("更新说明", "Release notes"))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.secondary)
-            ScrollView {
-                Text(notesBody)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Palette.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-            .frame(maxHeight: 220)
-            if update.pageURL != nil {
-                Button {
-                    update.openReleasePage()
-                } label: {
-                    Text(L10n.t("在浏览器中打开", "Open in browser"))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(update.notesVersion.map { L10n.t("版本 \($0)", "Version \($0)") } ?? L10n.t("更新说明", "Release notes"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.text)
+                Spacer(minLength: 8)
+                if update.pageURL != nil {
+                    Button {
+                        update.openReleasePage()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(L10n.t("在浏览器中打开", "Open in browser"))
+                            SVGIcon(.external, size: 11)
+                        }
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Palette.accent)
+                        .foregroundStyle(hoveringLink ? Palette.accent : Palette.tertiary)
+                    }
+                    .buttonStyle(StillButtonStyle())
+                    .onHover { h in withAnimation(.quiet) { hoveringLink = h } }
                 }
-                .buttonStyle(.plain)
+            }
+            FadingScrollView(maxHeight: 260) {
+                if update.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(L10n.t("这个版本没有附带说明。", "This version has no notes."))
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.tertiary)
+                } else {
+                    MarkdownNotes(markdown: update.notes)
+                }
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.04)))
-    }
-
-    private var notesBody: AttributedString {
-        let raw = update.notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = raw.isEmpty ? L10n.t("这个版本没有附带说明。", "This version has no notes.") : raw
-        if let parsed = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full)) {
-            return parsed
-        }
-        return AttributedString(text)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.5)
+        )
     }
 }

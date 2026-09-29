@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import SwiftUI
 import UsageCore
 
 /// 账号资料（`GET /api/oauth/profile`）：服务端实时的套餐档位。
@@ -228,6 +229,8 @@ final class OfficialUsageService {
         case auto
         /// 用户手动刷新 / 重新连接：只要求出口可用
         case manual
+        /// 打开面板时刷新：和手动一样只要求出口可用；10 秒内或限流中就安静地跳过
+        case opened
         /// 等待用户完成登录：先只读取钥匙串，登录后才发请求
         case login
     }
@@ -315,6 +318,8 @@ final class OfficialUsageService {
                 flash(L10n.tNow("刚刚查询过，\(seconds) 秒后可再试", "Just checked. Try again in \(seconds) s"))
                 return false
             }
+        case .opened:
+            guard now >= rateLimitedUntil, sinceAttempt >= Self.minimumSpacing else { return false }
         case .login:
             guard state.awaitingLogin, now >= rateLimitedUntil, sinceAttempt >= 2 else { return false }
         }
@@ -414,7 +419,8 @@ final class OfficialUsageService {
         let previous = state
         switch outcome {
         case .success(let usage, let credentials, let profile, let renewed):
-            self.usage = usage
+            // 数字滚动、进度条缓动到新值
+            withAnimation(self.usage == nil ? nil : .smooth(duration: 0.6)) { self.usage = usage }
             self.credentials = credentials
             loginExpiresAt = credentials.refreshTokenExpiresAt
             deadRefreshToken = nil

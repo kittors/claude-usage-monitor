@@ -27,7 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if CommandLine.arguments.contains("--open") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { menuBar.show() }
         }
-        if CommandLine.arguments.contains("--settings") {
+        if let index = CommandLine.arguments.firstIndex(of: "--settings") {
+            // 可以跟一个标签页：--settings display
+            let arguments = CommandLine.arguments
+            if index + 1 < arguments.count, let tab = SettingsTab(rawValue: arguments[index + 1]) {
+                SettingsNavigation.shared.tab = tab
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.openSettings() }
         }
     }

@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-29
+
+### Added
+
+- Opening the menu bar panel checks official usage right away, on by default. **Settings > Usage > Check when the panel opens** turns it off. Like Refresh, it only needs an allowed exit.
+- The menu bar can show several values at once: 5-hour, week (all models), per-model weekly limits such as Fable, and today's, this week's, or this month's cost. Pick them in **Settings > Display > Menu bar values**. The default is 5-hour only. With more than one, each value sits in a narrow column under a small label, so it stays compact and says what it is. Hovering lists the full names.
+- When a newer version is out, a small dot appears on **Settings…** in the panel footer. Clicking it opens **Settings > General** with the update row highlighted and the release notes open. **Skip** there hides the dot for that version only. A newer version shows it again, and Settings can still update at any time.
+
+### Changed
+
+- The refresh icon keeps turning until the new numbers arrive. While a check is in flight, the status next to Limits reads Syncing.
+- New numbers roll into place and bars ease to their new length. When a limit rises, the increase shows beside it for a few seconds.
+- Release notes in Settings are rendered as formatted Markdown: headings, nested lists, inline code, and code blocks. The notes fade out at the top and bottom edges when there is more to scroll.
+
 ## [1.2.2] - 2026-09-29
 
 ### Added

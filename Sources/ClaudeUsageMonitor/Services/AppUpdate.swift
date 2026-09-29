@@ -29,6 +29,8 @@ final class AppUpdate {
     private(set) var notesReady = false
     private(set) var notesVersion: String?
     private(set) var pageURL: URL?
+    /// 用户选择忽略的版本：只忽略这一个版本，出了更新的版本会再提醒；设置里仍然可以随时更新
+    private(set) var ignoredVersion = UserDefaults.standard.string(forKey: AppUpdate.ignoredKey)
 
     @ObservationIgnored private var release: AppRelease?
     @ObservationIgnored private var lastCheck = Date.distantPast
@@ -38,17 +40,36 @@ final class AppUpdate {
     static let endpoint = URL(string: "https://api.github.com/repos/kittors/claude-usage-monitor/releases/latest")!
     private static let interval: TimeInterval = 12 * 60 * 60
     private static let notifiedKey = "notifiedUpdateVersion"
+    private static let ignoredKey = "ignoredUpdateVersion"
 
     var canInstall: Bool {
         if case .available = phase { return true }
         return false
     }
 
-    var showsNotice: Bool {
+    /// 发现的新版本号
+    var availableVersion: String? {
+        if case .available(let version) = phase { return version }
+        return nil
+    }
+
+    /// 这个新版本已被忽略
+    var isIgnored: Bool { availableVersion != nil && availableVersion == ignoredVersion }
+
+    /// 面板「设置…」上的角标：有没被忽略的新版本，或正在下载、安装
+    var showsBadge: Bool {
         switch phase {
-        case .available, .downloading, .installing, .failed: true
+        case .available: !isIgnored
+        case .downloading, .installing: true
         default: false
         }
+    }
+
+    /// 忽略当前发现的新版本，下一个版本出来时再提醒
+    func ignoreAvailableVersion() {
+        guard let version = availableVersion else { return }
+        ignoredVersion = version
+        UserDefaults.standard.set(version, forKey: Self.ignoredKey)
     }
 
     var statusText: String {
@@ -56,7 +77,10 @@ final class AppUpdate {
         case .idle: L10n.t("当前 \(Self.currentText)", "Current \(Self.currentText)")
         case .checking: L10n.t("正在检查…", "Checking…")
         case .upToDate: L10n.t("已是最新 \(Self.currentText)", "Up to date \(Self.currentText)")
-        case .available(let version): L10n.t("发现新版本 \(version)", "Version \(version) is available")
+        case .available(let version):
+            isIgnored
+                ? L10n.t("已忽略新版本 \(version)，仍可随时更新", "Skipped version \(version). You can still update.")
+                : L10n.t("发现新版本 \(version)", "Version \(version) is available")
         case .downloading: L10n.t("正在下载 \(Fmt.percent(downloadFraction))", "Downloading \(Fmt.percent(downloadFraction))")
         case .installing: L10n.t("正在安装，即将重新打开", "Installing, reopening shortly")
         case .failed(let message): message
@@ -123,6 +147,12 @@ final class AppUpdate {
         }
     }
 
+    /// 展开更新说明（已经展开时保持不变）
+    func showNotes() {
+        guard !notesVisible else { return }
+        toggleNotes()
+    }
+
     func openReleasePage() {
         guard let pageURL else { return }
         NSWorkspace.shared.open(pageURL)
@@ -179,7 +209,7 @@ final class AppUpdate {
 
     private func remind(_ version: String) {
         let defaults = UserDefaults.standard
-        guard defaults.string(forKey: Self.notifiedKey) != version else { return }
+        guard defaults.string(forKey: Self.notifiedKey) != version, version != ignoredVersion else { return }
         defaults.set(version, forKey: Self.notifiedKey)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         let center = UNUserNotificationCenter.current()

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 import UsageCore
 
 /// 后台引擎：持有增量索引，所有操作都在私有串行队列上执行。
@@ -116,6 +117,8 @@ final class UsageStore {
     private(set) var pulse = 0
     private(set) var lastScan: ScanStats?
     private(set) var indexedFiles = 0
+    /// 用户发起的刷新（点「立即刷新」或打开面板）还在进行：官方查询回来后才结束
+    private(set) var isRefreshing = false
 
     @ObservationIgnored let prefs: Preferences
     @ObservationIgnored let engine = UsageEngine()
@@ -167,18 +170,25 @@ final class UsageStore {
 
     func refreshNow() {
         pulse += 1
+        rescanNow()
+        isRefreshing = requestOfficial(.manual)
+    }
+
+    /// 弹窗打开时调用：默认刷新一次（「设置 › 用量 › 打开面板时刷新」可以关闭）
+    func panelOpened() {
+        NetworkPlace.shared.refreshIfStale()
+        if prefs.refreshOnOpen {
+            rescanNow()
+            isRefreshing = requestOfficial(.opened)
+        }
+        ExchangeRates.shared.refreshIfStale()
+        AppUpdate.shared.checkIfStale()
+    }
+
+    private func rescanNow() {
         pendingScan?.cancel()
         pendingScan = nil
         scan()
-        requestOfficial(.manual)
-    }
-
-    /// 弹窗打开时调用：Claude Code 正在使用、数据超过 10 秒才查询官方用量
-    func panelOpened() {
-        NetworkPlace.shared.refreshIfStale()
-        evaluateAutoSync(.panelOpened)
-        ExchangeRates.shared.refreshIfStale()
-        AppUpdate.shared.checkIfStale()
     }
 
     /// 在终端中登录 Claude Code，登录完成后自动恢复官方用量
@@ -251,7 +261,12 @@ final class UsageStore {
         engine.compute(settings: billingSettings(), now: Date()) { [weak self] snap, files in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.snapshot = snap
+                // 已经在显示数据时，新数字滚动、进度条缓动过去；第一次出现不做动画
+                if self.snapshot != nil, snap != nil, self.phase == .ready {
+                    withAnimation(.smooth(duration: 0.5)) { self.snapshot = snap }
+                } else {
+                    self.snapshot = snap
+                }
                 self.indexedFiles = files
                 self.lastUpdated = Date()
                 self.phase = (snap?.hasData ?? false) ? .ready : (self.isScanning ? self.phase : .empty)
@@ -263,6 +278,7 @@ final class UsageStore {
     }
 
     private func officialChanged() {
+        if isRefreshing, !official.isFetching { isRefreshing = false }
         if let fetched = official.usage?.fetchedAt, fetched != lastSeenSync {
             // 新的一次成功查询：请求发出之前的消耗都已经体现在官方数字里
             syncedCost = requestCost ?? observedCost
@@ -472,8 +488,7 @@ final class UsageStore {
         activity.claudeCodeRunning = claudeCodeRunning(now)
         guard AutoSyncPolicy.shouldSync(
             mode: prefs.autoSyncMode, occasion: occasion, activity: activity,
-            lastRequest: official.lastAttempt, lastSync: official.usage?.fetchedAt,
-            windowReset: official.windowHasReset(now), now: now
+            lastRequest: official.lastAttempt, windowReset: official.windowHasReset(now), now: now
         ) else { return }
         guard !NetworkPlace.shared.blocksOfficialUsage else {
             // 出口还没确认，或上次确认时不可用：重新确认，变为可用后会再判断一次
@@ -483,9 +498,13 @@ final class UsageStore {
         requestOfficial(.auto)
     }
 
-    private func requestOfficial(_ trigger: OfficialUsageService.Trigger) {
+    /// 返回是否真的发出了查询
+    @discardableResult
+    private func requestOfficial(_ trigger: OfficialUsageService.Trigger) -> Bool {
         let cost = observedCost
-        if official.refresh(trigger) { requestCost = cost }
+        guard official.refresh(trigger) else { return false }
+        requestCost = cost
+        return true
     }
 
     /// 进程检查每 10 秒最多做一次

@@ -16,13 +16,11 @@ private func activity(running: Bool = true, consumedAgo: TimeInterval? = 3, unsy
 
 private func sync(
     _ mode: AutoSyncMode = .consumption, _ occasion: AutoSyncPolicy.Occasion = .tick,
-    _ activity: AutoSyncPolicy.Activity, requestedAgo: TimeInterval? = 60, syncedAgo: TimeInterval? = 60,
-    windowReset: Bool = false
+    _ activity: AutoSyncPolicy.Activity, requestedAgo: TimeInterval? = 60, windowReset: Bool = false
 ) -> Bool {
     AutoSyncPolicy.shouldSync(
         mode: mode, occasion: occasion, activity: activity,
         lastRequest: requestedAgo.map { now.addingTimeInterval(-$0) },
-        lastSync: syncedAgo.map { now.addingTimeInterval(-$0) },
         windowReset: windowReset, now: now
     )
 }
@@ -40,7 +38,6 @@ private func sync(
     for mode in AutoSyncMode.allCases {
         #expect(!sync(mode, .tick, idle, requestedAgo: nil))
     }
-    #expect(!sync(.consumption, .panelOpened, idle))
     #expect(!sync(.consumption, .resume, idle))
     #expect(!sync(.consumption, .tick, idle, windowReset: true))
 }
@@ -51,7 +48,6 @@ private func sync(
     #expect(sync(.every10Seconds, .tick, busy, requestedAgo: 10))
     #expect(!sync(.consumption, .tick, busy, requestedAgo: 9))
     #expect(!sync(.consumption, .resume, busy, requestedAgo: 5))
-    #expect(!sync(.consumption, .panelOpened, busy, requestedAgo: 5, syncedAgo: 600))
     #expect(!sync(.consumption, .tick, busy, requestedAgo: 3, windowReset: true))
     #expect(sync(.consumption, .tick, busy, requestedAgo: nil))
 }
@@ -83,12 +79,11 @@ private func sync(
     #expect(sync(.consumption, .tick, activity(consumedAgo: 1, unsynced: 0.01), requestedAgo: 3600))
 }
 
-@Test func panelAndResumeSyncWhileInUse() {
+@Test func resumeSyncsOnceWhileInUse() {
     let using = activity(unsynced: 0)
-    #expect(sync(.consumption, .panelOpened, using, requestedAgo: 30, syncedAgo: 30))
-    #expect(!sync(.consumption, .panelOpened, using, requestedAgo: 30, syncedAgo: 5))
-    #expect(sync(.consumption, .panelOpened, using, requestedAgo: nil, syncedAgo: nil))
     #expect(sync(.every5Minutes, .resume, using, requestedAgo: 11))
+    #expect(sync(.consumption, .resume, using, requestedAgo: nil))
+    #expect(!sync(.consumption, .resume, activity(running: false), requestedAgo: nil))
 }
 
 @Test func modeIntervals() {

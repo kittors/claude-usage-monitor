@@ -6,10 +6,21 @@ import UsageCore
 /// 有官方用量时按占用上色；没有时用模板色，跟随菜单栏的深浅。
 @MainActor
 enum StatusIconRenderer {
+    /// 菜单栏上的一个数值：小标签说明含义，数值本身按占用上色
+    struct Value: Equatable {
+        var label: String
+        var text: String
+        /// 限额的占用比例；费用为 nil（不上色）
+        var fraction: Double?
+        /// 整列的不透明度（设置页预览里突出某一列、或预览将要加入的一列）
+        var emphasis: Double = 1
+    }
+
     struct Input: Equatable {
         var icon: MenuBarIcon
         var style: MenuBarStyle
-        var text: String?
+        /// 一个时单行显示；两个以上时每个数值一列，上面是小标签
+        var values: [Value]
         /// 圆环 / 上方条：主指标占比
         var primary: Double
         /// 下方条：每周占比
@@ -27,29 +38,41 @@ enum StatusIconRenderer {
     }
 
     static func image(_ input: Input) -> NSImage {
-        let height: CGFloat = 18
         let glyph = glyphColor(input)
+        let showsText = input.style == .iconPercent || input.style == .ringPercent
+        let stacked = showsText && input.values.count > 1
+        // 两行（小标签 + 数值）需要整条菜单栏的高度
+        let height: CGFloat = stacked ? 22 : 18
+        let top = (height - 18) / 2
+
+        // 单行：只有一个数值
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: glyph]
-        let showsText = input.style == .iconPercent || input.style == .ringPercent
-        let text = showsText ? (input.text ?? "–") : nil
+        let text = showsText && !stacked ? (input.values.first?.text ?? "–") : nil
         let textSize = text.map { ($0 as NSString).size(withAttributes: attributes) } ?? .zero
+
+        // 多列：每列上面是小标签，下面是数值，列内居中
+        let columns = stacked ? input.values.map { Column($0, input: input) } : []
+        let columnGap: CGFloat = 7
 
         let iconWidth: CGFloat = 16
         let shield: CGFloat = 13
         var width = iconWidth
         if text != nil { width += 4 + ceil(textSize.width) }
+        if !columns.isEmpty { width += 5 + columns.reduce(0) { $0 + $1.width } + columnGap * CGFloat(columns.count - 1) }
         if input.style == .dualBars { width += 5 + 18 }
         if input.showsSafety { width += 4 + shield }
 
         let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: top)
             if input.style == .ringPercent {
                 drawRing(ctx, in: CGRect(x: 0, y: 1, width: 16, height: 16), fraction: input.primary, color: markColor(input.primary, input: input, fallback: glyph))
             } else {
                 drawIcon(ctx, input.icon, pose: input.pose, color: glyph)
             }
+            ctx.restoreGState()
 
             var cursor = iconWidth
             if let text {
@@ -57,10 +80,18 @@ enum StatusIconRenderer {
                 (text as NSString).draw(at: CGPoint(x: cursor, y: (height - textSize.height) / 2), withAttributes: attributes)
                 cursor += ceil(textSize.width)
             }
+            if !columns.isEmpty {
+                cursor += 5
+                for (index, column) in columns.enumerated() {
+                    if index > 0 { cursor += columnGap }
+                    column.draw(at: cursor, height: height)
+                    cursor += column.width
+                }
+            }
             if input.style == .dualBars {
                 let x = iconWidth + 5
-                drawBar(ctx, CGRect(x: x, y: 5, width: 18, height: 3), fraction: input.primary, color: markColor(input.primary, input: input, fallback: glyph))
-                drawBar(ctx, CGRect(x: x, y: 10, width: 18, height: 3), fraction: input.secondary, color: markColor(input.secondary, input: input, fallback: glyph))
+                drawBar(ctx, CGRect(x: x, y: top + 5, width: 18, height: 3), fraction: input.primary, color: markColor(input.primary, input: input, fallback: glyph))
+                drawBar(ctx, CGRect(x: x, y: top + 10, width: 18, height: 3), fraction: input.secondary, color: markColor(input.secondary, input: input, fallback: glyph))
                 cursor = x + 18
             }
             if input.showsSafety {
@@ -68,8 +99,42 @@ enum StatusIconRenderer {
             }
             return true
         }
-        image.isTemplate = input.fraction == nil && !input.showsSafety
+        image.isTemplate = input.fraction == nil && !input.showsSafety && input.values.allSatisfy { $0.fraction == nil }
         return image
+    }
+
+    /// 多个数值时的一列：小标签在上、数值在下，两行居中对齐
+    private struct Column {
+        let label: NSAttributedString
+        let value: NSAttributedString
+        let width: CGFloat
+
+        init(_ item: Value, input: Input) {
+            // 标签和费用用中性色（深色菜单栏为白、浅色为黑），只有限额的数值按占用上色
+            let base = input.onDarkMenuBar ? NSColor.white : NSColor.black
+            let labelFont = NSFont.systemFont(ofSize: 7.5, weight: .semibold)
+            label = NSAttributedString(string: item.label, attributes: [
+                .font: labelFont,
+                .foregroundColor: base.withAlphaComponent(0.62 * item.emphasis),
+                .kern: 0.2,
+            ])
+            let valueColor: NSColor = (item.fraction.map {
+                let rgb = UsageTone.tone(for: $0).components
+                return NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+            } ?? base).withAlphaComponent(item.emphasis)
+            value = NSAttributedString(string: item.text, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
+                .foregroundColor: valueColor,
+            ])
+            width = ceil(max(label.size().width, value.size().width))
+        }
+
+        func draw(at x: CGFloat, height: CGFloat) {
+            let labelSize = label.size()
+            let valueSize = value.size()
+            label.draw(at: CGPoint(x: x + (width - labelSize.width) / 2, y: 0.5))
+            value.draw(at: CGPoint(x: x + (width - valueSize.width) / 2, y: height - valueSize.height + 0.5))
+        }
     }
 
     private static func glyphColor(_ input: Input) -> NSColor {

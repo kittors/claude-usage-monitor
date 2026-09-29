@@ -14,7 +14,10 @@ struct LimitsSection: View {
         VStack(alignment: .leading, spacing: 13) {
             SectionTitle(title: L10n.t("用量限额", "Limits")) {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
-                    Text(statusText(official, now: context.date))
+                    let status = statusText(official, now: context.date)
+                    Text(status)
+                        .contentTransition(.opacity)
+                        .animation(.easeOut(duration: 0.25), value: status)
                 }
                 .help(statusHelp(official))
             }
@@ -44,6 +47,7 @@ struct LimitsSection: View {
 
     private func statusText(_ official: OfficialUsageService, now: Date) -> String {
         if let notice = official.notice { return notice }
+        if official.isFetching { return L10n.t("正在同步…", "Syncing…") }
         guard let usage = official.usage else {
             if official.state == .connecting, !official.isFetching { return L10n.t("尚未查询", "Not checked yet") }
             return Self.shortReason(official.state)
@@ -100,15 +104,25 @@ struct LimitsSection: View {
 
 private struct LimitRowView: View {
     let row: LimitRow
+    /// 刚刚上涨了多少，几秒后淡出
+    @State private var rise: Int?
+    @State private var riseCount = 0
 
     var body: some View {
         let color = Palette.level(row.fraction)
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(row.title)
                     .font(.rowLabel)
                     .foregroundStyle(Palette.text)
                 Spacer()
+                if let rise {
+                    Text("+\(rise)%")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(color.opacity(0.8))
+                        .monospacedDigit()
+                        .transition(.opacity.combined(with: .offset(y: 4)))
+                }
                 Text("\(row.percent)%")
                     .font(.rowValue)
                     .foregroundStyle(color)
@@ -127,6 +141,17 @@ private struct LimitRowView: View {
         }
         .contentShape(Rectangle())
         .help(row.resetsAt.map { L10n.t("重置时间：\(LimitsSection.moment($0))", "Resets \(LimitsSection.moment($0))") } ?? "")
+        .onChange(of: row.percent) { old, new in
+            guard new > old else { return }
+            withAnimation(.easeOut(duration: 0.25)) { rise = new - old }
+            riseCount += 1
+        }
+        .task(id: riseCount) {
+            guard rise != nil else { return }
+            try? await Task.sleep(for: .seconds(2.6))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.4)) { rise = nil }
+        }
     }
 
     private func resetText(now: Date) -> String {
@@ -288,6 +313,7 @@ struct CycleSection: View {
                             Text(summary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
+                                .contentTransition(.numericText())
                         }
                     }
                     .font(.caption)
@@ -326,11 +352,13 @@ struct CycleSection: View {
                     Text(L10n.t("省 \(money.compact(costs.savings))", "Saved \(money.compact(costs.savings))"))
                         .font(.caption)
                         .foregroundStyle(Palette.tertiary)
+                        .contentTransition(.numericText())
                         .help(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price."))
                     Text(Fmt.percent(tokens.cacheHitRate, digits: 1))
                         .font(.rowValue)
                         .foregroundStyle(Palette.text)
                         .monospacedDigit()
+                        .contentTransition(.numericText(value: tokens.cacheHitRate))
                 }
                 ThinBar(fraction: tokens.cacheHitRate, color: Color.white.opacity(0.42), delay: 0.14)
             }
@@ -350,6 +378,7 @@ struct CycleSection: View {
                 .font(.rowValue)
                 .foregroundStyle(Palette.text)
                 .monospacedDigit()
+                .contentTransition(.numericText())
         }
         .help(help ?? "")
     }
@@ -424,9 +453,11 @@ private struct ModelList: View {
             Spacer()
             Text(Fmt.percent(share, digits: share > 0 && share < 0.01 ? 1 : 0))
                 .foregroundStyle(Palette.tertiary)
+                .contentTransition(.numericText(value: share))
                 .frame(width: 40, alignment: .trailing)
             Text(money.whole(cost))
                 .foregroundStyle(Palette.text)
+                .contentTransition(.numericText(value: cost))
                 .frame(minWidth: 64, alignment: .trailing)
         }
         .font(.system(size: 11.5))

@@ -10,6 +10,8 @@ final class PanelPresentation {
 
 struct PopoverActions {
     var openSettings: () -> Void
+    /// 打开「设置 › 通用 › 软件更新」
+    var openUpdate: () -> Void
     var quit: () -> Void
     var chooseDataDirectory: () -> Void
 }
@@ -29,10 +31,6 @@ struct PopoverView: View {
             NetworkPlaceRow()
                 .padding(.bottom, 8)
             ClaudeProcessSection()
-            if AppUpdate.shared.showsNotice {
-                UpdateBanner()
-                    .padding(.bottom, 10)
-            }
             Hairline()
             content
             Hairline()
@@ -47,7 +45,6 @@ struct PopoverView: View {
         // 进程出现、退出，IPv6 警告、更新提示出现时，面板高度随内容一起过渡
         .animation(.disclosure, value: ClaudeProcesses.shared.tasks.map(\.pid))
         .animation(.disclosure, value: NetworkPlace.shared.ipv6IsDirect)
-        .animation(.disclosure, value: AppUpdate.shared.showsNotice)
         .opacity(visible ? 1 : 0)
         .animation(.easeOut(duration: 0.12), value: visible)
         .padding(Metrics.shadowInset)
@@ -342,42 +339,6 @@ private struct ClaudeProcessRow: View {
 
 // MARK: - 更新
 
-private struct UpdateBanner: View {
-    var body: some View {
-        let update = AppUpdate.shared
-        Button {
-            if update.canInstall { update.install() }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Text(update.statusText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.text)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Spacer(minLength: 8)
-                    if update.canInstall {
-                        Text(L10n.t("更新", "Update"))
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.white)
-                            .padding(.horizontal, 10)
-                            .frame(height: 22)
-                            .background(Capsule().fill(Palette.accent))
-                    }
-                }
-                if case .downloading = update.phase {
-                    DownloadProgress(fraction: update.downloadFraction)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.06)))
-        }
-        .buttonStyle(PressableStyle())
-        .disabled(!update.canInstall)
-    }
-}
-
 // MARK: - 顶栏 / 底栏
 
 private struct Header: View {
@@ -406,20 +367,46 @@ private struct Footer: View {
     let store: UsageStore
     let actions: PopoverActions
     @State private var spin = 0.0
+    @State private var spinning = false
 
     var body: some View {
         HStack(spacing: 0) {
-            FooterButton(icon: .sliders, title: L10n.t("设置…", "Settings…"), action: actions.openSettings)
+            // 有新版本时「设置…」带一个小圆点，点开直接到「通用 › 软件更新」
+            let update = AppUpdate.shared
+            FooterButton(icon: .sliders, title: L10n.t("设置…", "Settings…"), badge: update.showsBadge,
+                         action: update.showsBadge ? actions.openUpdate : actions.openSettings)
+                .help(update.availableVersion.map { L10n.t("新版本 \($0) 可以更新", "Version \($0) is available") } ?? "")
             Spacer()
             FooterButton(icon: .refresh, title: L10n.t("立即刷新", "Refresh"), rotation: spin) {
-                withAnimation(.settle) { spin += 360 }
                 store.refreshNow()
+                startSpinning()
             }
             .help(store.lastUpdated.map { L10n.t("上次同步：\(Fmt.relative($0))", "Last sync: \(Fmt.relative($0))") } ?? "")
             Spacer()
             FooterButton(icon: .power, title: L10n.t("退出", "Quit"), action: actions.quit)
         }
         .padding(.horizontal, -8)
+        .onChange(of: store.isRefreshing) { _, refreshing in
+            if refreshing { startSpinning() }
+        }
+        .onAppear {
+            if store.isRefreshing { startSpinning() }
+        }
+    }
+
+    /// 至少转一圈；刷新还没完成就接着转，新结果出来后停在整圈处
+    private func startSpinning() {
+        guard !spinning else { return }
+        spinning = true
+        turn()
+    }
+
+    private func turn() {
+        withAnimation(.linear(duration: 0.75)) {
+            spin += 360
+        } completion: {
+            if store.isRefreshing { turn() } else { spinning = false }
+        }
     }
 }
 

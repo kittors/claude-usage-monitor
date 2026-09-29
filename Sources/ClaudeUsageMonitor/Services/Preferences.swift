@@ -38,24 +38,95 @@ enum MenuBarStyle: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .icon: L10n.tNow("仅图标", "Icon")
-        case .iconPercent: L10n.tNow("图标 + 百分比", "Icon + percent")
-        case .ringPercent: L10n.tNow("圆环 + 百分比", "Ring + percent")
+        case .iconPercent: L10n.tNow("图标 + 数值", "Icon + values")
+        case .ringPercent: L10n.tNow("圆环 + 数值", "Ring + values")
         case .dualBars: L10n.tNow("图标 + 双条", "Icon + bars")
         }
     }
 }
 
-enum MenuBarMetric: String, CaseIterable, Identifiable, Codable {
-    case fiveHour, weekly, today, week, cycle
+/// 菜单栏上可以显示的数值，可以多选。按模型的周额度（例如 Fable）用模型名区分。
+enum MenuBarItem: Hashable, Identifiable {
+    case fiveHour
+    case weekly
+    case model(String)
+    case todayCost
+    case weekCost
+    case monthCost
+
     var id: String { rawValue }
 
+    var rawValue: String {
+        switch self {
+        case .fiveHour: "fiveHour"
+        case .weekly: "weekly"
+        case .model(let name): "model:\(name)"
+        case .todayCost: "today"
+        case .weekCost: "week"
+        case .monthCost: "cycle"
+        }
+    }
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "fiveHour": self = .fiveHour
+        case "weekly": self = .weekly
+        case "today": self = .todayCost
+        case "week": self = .weekCost
+        case "cycle": self = .monthCost
+        default:
+            guard rawValue.hasPrefix("model:"), rawValue.count > 6 else { return nil }
+            self = .model(String(rawValue.dropFirst(6)))
+        }
+    }
+
+    /// 设置里的完整名字，也用于菜单栏的悬停说明
     var title: String {
         switch self {
         case .fiveHour: L10n.tNow("5 小时", "5-hour")
-        case .weekly: L10n.tNow("本周百分比", "Weekly percent")
-        case .today: L10n.tNow("每日费用", "Today")
-        case .week: L10n.tNow("每周费用", "This week")
-        case .cycle: L10n.tNow("每月费用", "This month")
+        case .weekly: L10n.tNow("本周 · 全部模型", "Week · all models")
+        case .model(let name): L10n.tNow("本周 · \(name)", "Week · \(name)")
+        case .todayCost: L10n.tNow("今日费用", "Today's cost")
+        case .weekCost: L10n.tNow("本周费用", "This week's cost")
+        case .monthCost: L10n.tNow("本月费用", "This month's cost")
+        }
+    }
+
+    /// 菜单栏上数值上方的小标签，尽量短
+    var shortLabel: String {
+        switch self {
+        case .fiveHour: L10n.tNow("5小时", "5H")
+        case .weekly: L10n.tNow("本周", "WEEK")
+        case .model(let name): L10n.tNow(name, name.uppercased())
+        case .todayCost: L10n.tNow("今日", "TODAY")
+        case .weekCost: L10n.tNow("本周", "WEEK")
+        case .monthCost: L10n.tNow("本月", "MONTH")
+        }
+    }
+
+    var isCost: Bool {
+        switch self {
+        case .todayCost, .weekCost, .monthCost: true
+        default: false
+        }
+    }
+
+    /// 按菜单栏上的顺序排列：限额在前、费用在后；同类之间保持原来的先后
+    static func ordered(_ items: [MenuBarItem]) -> [MenuBarItem] {
+        items.enumerated()
+            .sorted { ($0.element.order, $0.offset) < ($1.element.order, $1.offset) }
+            .map(\.element)
+    }
+
+    /// 菜单栏上的排列顺序：限额在前（5 小时、本周、各模型），费用在后
+    var order: Int {
+        switch self {
+        case .fiveHour: 0
+        case .weekly: 1
+        case .model: 2
+        case .todayCost: 3
+        case .weekCost: 4
+        case .monthCost: 5
         }
     }
 }
@@ -136,7 +207,11 @@ final class Preferences {
     }
     var menuBarIcon: MenuBarIcon { didSet { save(menuBarIcon.rawValue, "menuBarIcon") } }
     var menuBarStyle: MenuBarStyle { didSet { save(menuBarStyle.rawValue, "menuBarStyle") } }
-    var menuBarMetric: MenuBarMetric { didSet { save(menuBarMetric.rawValue, "menuBarMetric") } }
+    /// 菜单栏显示哪些数值（可以多选）。默认只显示 5 小时。
+    var menuBarItems: [MenuBarItem] { didSet { save(menuBarItems.map(\.rawValue), "menuBarItems") } }
+
+    /// 菜单栏上的实际顺序：限额在前、费用在后；同类之间保持选择的先后
+    var orderedMenuBarItems: [MenuBarItem] { MenuBarItem.ordered(menuBarItems) }
     /// 菜单栏数值右侧显示出口安不安全。
     var showExitSafety: Bool { didSet { save(showExitSafety, "showExitSafety") } }
     /// 本期消耗看哪一段。默认本周，因为额度按周重置。
@@ -158,6 +233,8 @@ final class Preferences {
     var autoRenewLogin: Bool { didSet { save(autoRenewLogin, "autoRenewLogin") } }
     /// 自动查询官方用量的频率。默认按 Token 消耗。
     var autoSyncMode: AutoSyncMode { didSet { save(autoSyncMode.rawValue, "autoSyncMode") } }
+    /// 点开菜单栏图标时刷新一次。默认开启。
+    var refreshOnOpen: Bool { didSet { save(refreshOnOpen, "refreshOnOpen") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -176,7 +253,10 @@ final class Preferences {
         appLanguage = AppLanguage(rawValue: d.string(forKey: "appLanguage") ?? "") ?? .system
         menuBarIcon = MenuBarIcon(rawValue: d.string(forKey: "menuBarIcon") ?? "") ?? .mascot
         menuBarStyle = MenuBarStyle(rawValue: d.string(forKey: "menuBarStyle") ?? "") ?? .iconPercent
-        menuBarMetric = MenuBarMetric(rawValue: d.string(forKey: "menuBarMetric") ?? "") ?? .fiveHour
+        // 以前只能选一个数值：沿用那一个
+        let savedItems = (d.stringArray(forKey: "menuBarItems") ?? d.string(forKey: "menuBarMetric").map { [$0] } ?? [])
+            .compactMap(MenuBarItem.init(rawValue:))
+        menuBarItems = savedItems.isEmpty ? [.fiveHour] : savedItems
         showExitSafety = d.object(forKey: "showExitSafety") as? Bool ?? true
         costSpan = CostSpan(rawValue: d.string(forKey: "costSpan") ?? "") ?? .week
         weeklyResetAt = (d.object(forKey: "weeklyResetAt") as? Double).map { Date(timeIntervalSince1970: $0) }
@@ -194,6 +274,7 @@ final class Preferences {
             autoRenewLogin = d.object(forKey: "autoRenewLogin") as? Bool ?? true
         }
         autoSyncMode = AutoSyncMode(rawValue: d.string(forKey: "autoSyncMode") ?? "") ?? .consumption
+        refreshOnOpen = d.object(forKey: "refreshOnOpen") as? Bool ?? true
     }
 
     private func save(_ value: Any?, _ key: String) {

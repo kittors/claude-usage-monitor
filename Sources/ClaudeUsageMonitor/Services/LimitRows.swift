@@ -32,6 +32,33 @@ extension UsageStore {
         official.usage.map { Self.rows(from: $0, now: Date()) } ?? []
     }
 
+    /// 菜单栏上某一项的当前数值；还没有数据时为 nil
+    func menuBarValue(_ item: MenuBarItem, money: MoneyFormat) -> StatusIconRenderer.Value? {
+        let rows = limitRows
+        func limit(_ row: LimitRow?) -> StatusIconRenderer.Value? {
+            row.map { .init(label: item.shortLabel, text: "\($0.percent)%", fraction: $0.fraction) }
+        }
+        func cost(_ amount: Double?) -> StatusIconRenderer.Value? {
+            amount.map { .init(label: item.shortLabel, text: money.compact($0), fraction: nil) }
+        }
+        switch item {
+        case .fiveHour: return limit(rows.first { $0.id == "five" })
+        case .weekly: return limit(rows.first { $0.id == "week" })
+        case .model(let name): return limit(rows.first { $0.id == "scoped-\(name)" || $0.id == "family-\(name)" })
+        case .todayCost: return cost(snapshot?.day.cost)
+        case .weekCost: return cost(snapshot?.week?.cost)
+        case .monthCost: return cost(snapshot?.billing.cost)
+        }
+    }
+
+    /// 有单独周额度的模型（例如 Fable），可以放到菜单栏上
+    var limitModels: [String] {
+        limitRows.compactMap { row in
+            for prefix in ["scoped-", "family-"] where row.id.hasPrefix(prefix) { return String(row.id.dropFirst(prefix.count)) }
+            return nil
+        }
+    }
+
     static func rows(from usage: OfficialUsage, now: Date) -> [LimitRow] {
         var rows: [LimitRow] = []
 

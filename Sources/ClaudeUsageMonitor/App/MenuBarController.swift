@@ -82,9 +82,9 @@ final class MenuBarController: NSObject {
     @objc private func menuSettings() { openSettings() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
-    /// 根据最新快照与偏好更新状态栏图标
-    func update(with snapshot: UsageSnapshot) {
-        renderIcon(snapshot: snapshot)
+    /// 本机数据或官方数据有更新时刷新状态栏图标
+    func refresh() {
+        renderIcon()
     }
 
     private func observeIconInputs() {
@@ -109,30 +109,39 @@ final class MenuBarController: NSObject {
         }
     }
 
-    private func renderIcon(snapshot: UsageSnapshot? = nil) {
-        let snap = snapshot ?? store.snapshot
+    private func renderIcon() {
+        let snap = store.snapshot
+        // 百分比只用官方数据：没有官方数据时显示「–」，不做估算
         let rows = store.limitRows
-        let five = rows.first { $0.id == "five" }?.fraction ?? 0
-        let week = rows.first { $0.id == "week" }?.fraction ?? 0
+        let five = rows.first { $0.id == "five" }
+        let week = rows.first { $0.id == "week" }
         let money = prefs.money
         let text: String? = switch prefs.menuBarMetric {
-        case .fiveHour: snap.map { _ in Fmt.percent(five) }
-        case .weekly: snap.map { _ in Fmt.percent(week) }
-        case .today: snap?.today.map { money.compact($0.cost) }
+        case .fiveHour: five.map { "\($0.percent)%" }
+        case .weekly: week.map { "\($0.percent)%" }
+        case .today: snap.map { money.compact($0.day.cost) }
+        case .week: snap?.week.map { money.compact($0.cost) }
         case .cycle: snap.map { money.compact($0.billing.cost) }
         }
-        let primary = prefs.menuBarMetric == .weekly ? week : five
-        let worst = max(five, week)
+        let primary = (prefs.menuBarMetric == .weekly ? week : five)?.fraction ?? 0
+        let worst = max(five?.fraction ?? 0, week?.fraction ?? 0)
         let level: StatusIconRenderer.Level = worst >= 0.95 ? .critical : (worst >= prefs.warningThreshold ? .warning : .normal)
         let input = StatusIconRenderer.Input(
             icon: prefs.menuBarIcon, style: prefs.menuBarStyle, text: text ?? "–",
-            primary: primary, secondary: week, level: level, pose: iconInput?.pose ?? .idle
+            primary: primary, secondary: week?.fraction ?? 0, level: level, pose: iconInput?.pose ?? .idle
         )
         iconInput = input
         statusItem.button?.image = StatusIconRenderer.image(input)
-        statusItem.button?.toolTip = snap.map {
-            "5 小时 \(Fmt.percent(five)) · 本周 \(Fmt.percent(week)) · 本期 \(money.string($0.billing.cost))"
-        } ?? "Claude Usage Monitor"
+        var tip: [String] = []
+        if let five, let week {
+            tip.append("5 小时 \(five.percent)% · 本周 \(week.percent)%")
+        } else if let five {
+            tip.append("5 小时 \(five.percent)%")
+        } else if prefs.officialUsageEnabled {
+            tip.append("官方用量：\(LimitsSection.shortReason(store.official.state))")
+        }
+        if let weekCost = snap?.week { tip.append("本周 \(money.string(weekCost.cost))") }
+        statusItem.button?.toolTip = tip.isEmpty ? "Claude Usage Monitor" : tip.joined(separator: " · ")
     }
 
     /// 有新数据时 Clawd 举一下手
@@ -270,7 +279,8 @@ final class MenuBarController: NSObject {
     /// 返回 true 表示事件已处理、不再继续分发
     private func handleLocal(_ event: LocalEvent) -> Bool {
         if event.isMouseDown {
-            if event.windowNumber != panel.windowNumber { clickedOutside() }
+            // 下拉菜单是另一扇窗口，点菜单项不能当成点到面板外面
+            if event.windowNumber != panel.windowNumber, !Self.isMenuWindow(event.windowNumber) { clickedOutside() }
             return false
         }
         if event.keyCode == 53 {  // Esc
@@ -286,6 +296,11 @@ final class MenuBarController: NSObject {
         default: return false
         }
         return true
+    }
+
+    private static func isMenuWindow(_ number: Int) -> Bool {
+        guard let window = NSApp.window(withWindowNumber: number) else { return false }
+        return String(describing: type(of: window)).contains("Menu")
     }
 
     private func removeMonitors() {

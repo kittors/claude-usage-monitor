@@ -31,7 +31,7 @@ final class Notifier {
         let resetDate: Date
         switch row.reset {
         case .countdown(let d), .weekday(let d): resetDate = d
-        case .idle, .none: return
+        case .elapsed, .idle, .none: return
         }
         let name = row.id == "five" ? "5 小时限额" : "本周限额"
         for t in thresholds where row.fraction >= t {
@@ -44,7 +44,7 @@ final class Notifier {
 
             let reset = Fmt.countdown(resetDate.timeIntervalSinceNow, showSeconds: false)
             post(
-                title: "\(name)已使用 \(Fmt.percent(row.fraction))",
+                title: "\(name)已使用 \(row.percent)%",
                 body: t >= 0.95
                     ? "即将触达上限，\(reset)后重置。"
                     : "当前消耗偏快，\(reset)后重置。"

@@ -15,13 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openSettings()
         }
         self.menuBar = menuBar
-        store.onSnapshot = { [weak self] snapshot in
+        store.onUpdate = { [weak self] in
             guard let self else { return }
-            self.menuBar?.update(with: snapshot)
-            // 官方数据源开启时只按官方数据提醒，避免启动阶段按未校准的估算值误报
-            if self.store.isUsingOfficialLimits || !self.prefs.officialUsageEnabled {
-                self.notifier.evaluate(self.store.limitRows, prefs: self.prefs)
-            }
+            self.menuBar?.refresh()
+            self.notifier.evaluate(self.store.limitRows, prefs: self.prefs)
         }
         store.start()
 

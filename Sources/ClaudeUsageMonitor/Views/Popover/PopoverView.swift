@@ -80,10 +80,12 @@ private struct Header: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Palette.text)
             Spacer()
-            // 只有凭据明确给出倍数时才用识别结果，否则以设置中选择的计划为准
-            Text((store.official.detectedPlan ?? prefs.plan).title)
-                .font(.caption)
-                .foregroundStyle(Palette.tertiary)
+            // 套餐来自服务端账号资料（凭据里的档位是登录时的快照，升级后不会更新）
+            if let plan = store.official.detectedPlan ?? prefs.plan {
+                Text(plan.title)
+                    .font(.caption)
+                    .foregroundStyle(Palette.tertiary)
+            }
         }
         .frame(height: 22)
     }

@@ -11,7 +11,10 @@ public struct OfficialLimit: Sendable, Equatable {
         self.resetsAt = resetsAt
     }
 
-    public var fraction: Double { utilization / 100 }
+    /// 展示用的整数百分比：与 Claude Code `/usage` 一样向下取整（71.9 显示为 71%）
+    public var percent: Int { utilization.isFinite ? Int(max(0, utilization).rounded(.down)) : 0 }
+    /// 与展示一致的占比（进度条、预警线都按它判断，避免显示 79% 却变色）
+    public var fraction: Double { Double(percent) / 100 }
 }
 
 /// 按模型划分的周额度（例如 Fable）
@@ -57,6 +60,25 @@ public struct OfficialUsage: Sendable, Equatable {
             scoped: scoped,
             fetchedAt: fetchedAt
         )
+    }
+
+    /// 每周限额的下一次重置（就近取整到秒）。5 小时窗口是滚动的，不在这里。
+    /// 面板上的「周六 22:00」是同一时刻，只显示到分钟。
+    public func weeklyReset() -> Date? {
+        let reset = sevenDay?.resetsAt
+            ?? scoped.compactMap(\.limit.resetsAt).first
+            ?? sevenDaySonnet?.resetsAt
+            ?? sevenDayOpus?.resetsAt
+        guard let reset else { return nil }
+        return Date(timeIntervalSince1970: reset.timeIntervalSince1970.rounded())
+    }
+
+    /// 每周限额的重置时刻（本地时区的时、分），月度筛选用同一时刻切开。
+    public func weeklyResetClock(calendar cal: Calendar = .current) -> (hour: Int, minute: Int)? {
+        guard let reset = weeklyReset() else { return nil }
+        let parts = cal.dateComponents([.hour, .minute], from: reset)
+        guard let hour = parts.hour, let minute = parts.minute else { return nil }
+        return (hour, minute)
     }
 
     private struct Raw: Decodable {

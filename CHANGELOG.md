@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-09-29
+
+### Added
+
+- **Automatic login renewal** (on by default, Settings > Usage). Claude Code's access token expires after about 8 hours, and only the CLI renews it. The app renews it about 5 minutes before it expires, the same way Claude Code does:
+  - it uses the same lock files, so it does not renew at the same time as Claude Code;
+  - it checks that the keychain item can be written, writes, then reads the result back;
+  - it replaces only the `claudeAiOauth` tokens and leaves the rest of the item untouched;
+  - if Claude Code renewed or signed in during the attempt, the app keeps that result.
+
+  With renewal off, the app does not write to the keychain.
+- **Sign-in detection.** When the Claude Code login has expired or was cleared, the panel and Settings say so and offer Sign in with Claude Code in Terminal. That runs `claude auth login`. After you finish in the browser, the app picks up the new login.
+- Settings shows when the Claude Code login expires.
+
+### Changed
+
+- **Official numbers only.** 5-hour and weekly percentages come from the official usage endpoint and are shown like Claude Code `/usage` (rounded down). Local estimates are gone: no extrapolation between syncs, no local-cost budgets, no inferred mid-cycle weekly reset. If the endpoint is unavailable, the app keeps the last official values and shows when they were fetched. If it has never synced, it shows the reason and leaves the percentages blank.
+- The panel syncs when opened if the data is older than a minute, and again when a window resets.
+- Credentials are read the way Claude Code reads them, through `/usr/bin/security`. Claude Code clears other apps' keychain access each time it rewrites the item, so the Keychain API asked for a password after every token refresh.
+- **Spend follows the weekly quota.** The default window is the official weekly reset, to the second, and usage before that instant stays in the previous week. Tabs on the section switch to the billing month or to today. The month uses your billing day and the same clock. Each range ends on the last second of the window.
+- The warning slider tracks the pointer in 1% steps.
+
+### Removed
+
+- The Plan settings page (budgets and the weekly start override). The plan comes from the account profile.
+
 ## [1.0.0] - 2026-09-29
 
 The first public release: a minimal macOS menu bar app that shows your Claude / Claude Code usage at a glance.

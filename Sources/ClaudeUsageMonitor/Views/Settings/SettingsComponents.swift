@@ -177,25 +177,6 @@ struct NumberField: View {
     }
 }
 
-/// 百分比输入（可留空）
-struct PercentField: View {
-    @Binding var text: String
-    var placeholder = "—"
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        FieldChrome(focused: focused) {
-            TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Palette.quaternary))
-                .textFieldStyle(.plain)
-                .multilineTextAlignment(.trailing)
-                .monospacedDigit()
-                .focused($focused)
-                .frame(width: 30)
-            Text("%").foregroundStyle(Palette.tertiary)
-        }
-    }
-}
-
 private struct FieldChrome<Content: View>: View {
     var focused: Bool
     @ViewBuilder var content: Content
@@ -215,36 +196,49 @@ private struct FieldChrome<Content: View>: View {
     }
 }
 
-/// 细滑块
+/// 细滑块。拇指中心跟着指针走，轨道两端留出拇指半径，避免拖到头时拇指被裁切、手感发飘。
 struct ThinSlider: View {
     @Binding var value: Double
     var range: ClosedRange<Double>
     var step: Double
     var width: CGFloat = 150
 
+    private let thumb: CGFloat = 14
+
     var body: some View {
         GeometryReader { geo in
             let span = range.upperBound - range.lowerBound
-            let f = span > 0 ? (value - range.lowerBound) / span : 0
+            let travel = max(geo.size.width - thumb, 1)
+            let f = span > 0 ? min(max((value - range.lowerBound) / span, 0), 1) : 0
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.12)).frame(height: 3)
-                Capsule().fill(Palette.accent).frame(width: max(3, geo.size.width * f), height: 3)
+                Capsule().fill(Palette.accent).frame(width: thumb / 2 + travel * f, height: 3)
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 13, height: 13)
+                    .frame(width: thumb, height: thumb)
                     .shadow(color: .black.opacity(0.3), radius: 1.5, y: 0.5)
-                    .offset(x: geo.size.width * f - 6.5)
+                    .offset(x: travel * f)
             }
-            .frame(maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0).onChanged { g in
-                    let raw = range.lowerBound + Double(g.location.x / geo.size.width) * span
-                    value = min(max((raw / step).rounded() * step, range.lowerBound), range.upperBound)
-                }
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { g in
+                        let x = min(max(g.location.x - thumb / 2, 0), travel)
+                        let raw = range.lowerBound + Double(x / travel) * span
+                        let stepped = (raw / step).rounded() * step
+                        let next = min(max(stepped, range.lowerBound), range.upperBound)
+                        if next != value { value = next }
+                    }
             )
+            .onContinuousHover { phase in
+                switch phase {
+                case .active: NSCursor.resizeLeftRight.set()
+                case .ended: NSCursor.arrow.set()
+                }
+            }
         }
-        .frame(width: width, height: 18)
+        .frame(width: width, height: 22)
     }
 }
 

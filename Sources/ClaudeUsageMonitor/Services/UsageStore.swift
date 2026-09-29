@@ -119,9 +119,10 @@ final class UsageStore {
 
     @ObservationIgnored let prefs: Preferences
     @ObservationIgnored let engine = UsageEngine()
-    /// 官方用量（准确的 5 小时 / 每周百分比）
+    /// 官方用量（5 小时 / 每周百分比）
     let official = OfficialUsageService()
-    @ObservationIgnored var onSnapshot: ((UsageSnapshot) -> Void)?
+    /// 本机数据或官方数据有更新（刷新菜单栏、检查提醒）
+    @ObservationIgnored var onUpdate: (() -> Void)?
     @ObservationIgnored private var watcher: SessionWatcher?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var pendingScan: DispatchWorkItem?
@@ -129,9 +130,6 @@ final class UsageStore {
     @ObservationIgnored private var rescanRequested = false
     @ObservationIgnored private var lastProgressPush = Date.distantPast
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    @ObservationIgnored private var lastCalibration = Date.distantPast
-    /// 官方每周百分比的观测记录（识别中途重置）
-    @ObservationIgnored private let weeklyTracker = WeeklyResetTracker()
 
     init(prefs: Preferences) {
         self.prefs = prefs
@@ -139,8 +137,9 @@ final class UsageStore {
 
     func start() {
         official.onChange = { [weak self] in self?.officialChanged() }
-        if prefs.officialUsageEnabled { official.refresh(force: true) } else { official.setEnabled(false) }
-        observeOfficialToggle()
+        official.autoRenew = prefs.autoRenewLogin
+        if prefs.officialUsageEnabled { official.refresh(.manual) } else { official.setEnabled(false) }
+        observeOfficialSettings()
 
         engine.prepare(signature: prefs.sourceSignature) { hadCache in
             DispatchQueue.main.async {
@@ -162,12 +161,18 @@ final class UsageStore {
         pendingScan?.cancel()
         pendingScan = nil
         scan()
-        official.refresh(force: true)
+        official.refresh(.manual)
     }
 
-    /// 弹窗打开时调用：官方数据有节流，不会频繁请求
+    /// 弹窗打开时调用：数据超过 1 分钟就同步一次（仍受频率限制保护）
     func panelOpened() {
-        official.refresh()
+        official.refresh(.panel)
+    }
+
+    /// 在终端中登录 Claude Code，登录完成后自动恢复官方用量
+    func signInToClaudeCode() {
+        guard ClaudeLogin.openInTerminal() else { return }
+        official.watchForLogin()
     }
 
     private func scan(initial: Bool = false) {
@@ -210,8 +215,28 @@ final class UsageStore {
         phase = .indexing(total > 0 ? Double(done) / Double(total) : 1)
     }
 
+    /// 计费周期配置。重置时刻用官方每周限额（面板上的「周六 22:00」），还没同步过时用上次记下的时刻。
+    func billingSettings() -> UsageSettings {
+        var settings = prefs.usageSettings
+        if let reset = official.usage?.weeklyReset() ?? prefs.weeklyResetAt {
+            settings.weeklyReset = reset
+            let parts = Calendar.current.dateComponents([.hour, .minute, .second], from: reset)
+            if let hour = parts.hour { settings.billingAnchorHour = hour }
+            if let minute = parts.minute { settings.billingAnchorMinute = minute }
+            if let second = parts.second { settings.billingAnchorSecond = second }
+        }
+        return settings
+    }
+
+    /// 已确定的重置时刻：当前官方数据优先，否则用上次同步记下的时刻
+    var learnedResetClock: (hour: Int, minute: Int)? {
+        if let clock = official.usage?.weeklyResetClock(calendar: .current) { return clock }
+        if let hour = prefs.billingAnchorHour, let minute = prefs.billingAnchorMinute { return (hour, minute) }
+        return nil
+    }
+
     func recompute(pulse: Bool = false) {
-        engine.compute(settings: effectiveSettings, now: Date()) { [weak self] snap, files in
+        engine.compute(settings: billingSettings(), now: Date()) { [weak self] snap, files in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.snapshot = snap
@@ -219,78 +244,39 @@ final class UsageStore {
                 self.lastUpdated = Date()
                 self.phase = (snap?.hasData ?? false) ? .ready : (self.isScanning ? self.phase : .empty)
                 if pulse { self.pulse += 1 }
-                if let snap {
-                    self.autoCalibrate(snap)
-                    self.dropStaleOverride(snap)
-                    self.onSnapshot?(snap)
-                }
+                self.onUpdate?()
             }
         }
-    }
-
-    /// 有官方数据时，用官方窗口替换本地推算的窗口，保证本机费用与官方百分比口径一致
-    private var effectiveSettings: UsageSettings {
-        var settings = prefs.usageSettings
-        settings.weeklyObservations = weeklyTracker.log.observations
-        settings.weeklyResetFloor = weeklyTracker.log.resetFloorDate
-        guard let usage = official.freshUsage else { return settings }
-        settings.officialSyncedAt = usage.fetchedAt
-        let now = Date()
-        if let reset = usage.fiveHour?.resetsAt, reset > now {
-            settings.fiveHourWindow = DateInterval(start: reset.addingTimeInterval(-UsageCalculator.fiveHours), end: reset)
-        }
-        if let reset = usage.sevenDay?.resetsAt, reset > now {
-            settings.weeklyWindow = DateInterval(start: reset.addingTimeInterval(-7 * 86_400), end: reset)
-        }
-        return settings
     }
 
     private func officialChanged() {
         if let plan = official.detectedPlan, plan != prefs.plan { prefs.plan = plan }
-        if let usage = official.freshUsage, let week = usage.sevenDay {
-            weeklyTracker.record(week, at: usage.fetchedAt)
+        // 记下每周限额的重置时刻，下次启动、还没同步完时周期也不会退回 0:00
+        if let reset = official.usage?.weeklyReset() {
+            if prefs.weeklyResetAt != reset { prefs.weeklyResetAt = reset }
+            let parts = Calendar.current.dateComponents([.hour, .minute, .second], from: reset)
+            if let hour = parts.hour, prefs.billingAnchorHour != hour { prefs.billingAnchorHour = hour }
+            if let minute = parts.minute, prefs.billingAnchorMinute != minute { prefs.billingAnchorMinute = minute }
+            if let second = parts.second, prefs.billingAnchorSecond != second { prefs.billingAnchorSecond = second }
         }
-        recompute()
+        onUpdate?()
     }
 
-    /// 用官方百分比反推预算：用于「按当前速率」预测，以及离线时的估算
-    private func autoCalibrate(_ snap: UsageSnapshot) {
-        guard let usage = official.freshUsage, Date().timeIntervalSince(lastCalibration) > 600 else { return }
-        var changed = false
-        // 官方百分比对应的是同步那一刻的用量，要扣掉之后新增的本机费用
-        if let f = usage.fiveHour?.fraction, f >= 0.08, snap.fiveHour.cost - snap.costSinceSync >= 2 {
-            let budget = ((snap.fiveHour.cost - snap.costSinceSync) / f).rounded()
-            if abs(budget - prefs.fiveHourBudget) / max(1, prefs.fiveHourBudget) > 0.03 { prefs.fiveHourBudget = budget; changed = true }
-        }
-        // 周预算只用差分推算的结果：直接用「本周费用 ÷ 百分比」会被中途重置之前的用量污染
-        if let inferred = snap.weeklyInferredBudget {
-            let budget = inferred.rounded()
-            let reference = prefs.plan.weeklyBudget
-            if budget > reference * 0.2, budget < reference * 5,
-               abs(budget - prefs.weeklyBudget) / max(1, prefs.weeklyBudget) > 0.03 {
-                prefs.weeklyBudget = budget
-                changed = true
-            }
-        }
-        if changed { prefs.budgetsCalibrated = true }
-        lastCalibration = Date()
-    }
-
-    /// 手动指定的起算时间只在当前周期内有效
-    private func dropStaleOverride(_ snap: UsageSnapshot) {
-        if let override = prefs.weeklyStartOverride, override <= snap.weeklyCycleStart {
-            prefs.weeklyStartOverride = nil
-        }
-    }
-
-    private func observeOfficialToggle() {
+    private func observeOfficialSettings() {
         withObservationTracking {
             _ = prefs.officialUsageEnabled
+            _ = prefs.autoRenewLogin
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.official.setEnabled(self.prefs.officialUsageEnabled)
-                self.observeOfficialToggle()
+                let renewTurnedOn = self.prefs.autoRenewLogin && !self.official.autoRenew
+                self.official.autoRenew = self.prefs.autoRenewLogin
+                if self.prefs.officialUsageEnabled == (self.official.state == .disabled) {
+                    self.official.setEnabled(self.prefs.officialUsageEnabled)
+                } else if renewTurnedOn, self.official.state == .expired {
+                    self.official.refresh(.manual)
+                }
+                self.observeOfficialSettings()
             }
         }
     }
@@ -344,7 +330,7 @@ final class UsageStore {
                 guard let self else { return }
                 // 时间窗口会随时间滑动；同时作为 FSEvents 的兜底
                 if Date().timeIntervalSince(self.lastScanAt) > 55 { self.scan() } else { self.recompute() }
-                self.official.refresh()
+                self.official.refresh(.timer)
             }
         }
         timer.tolerance = 5
@@ -383,7 +369,10 @@ final class UsageStore {
         observers.append(center.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main, using: recompute))
         observers.append(center.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main, using: recompute))
         observers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleScan(after: 2) }
+            MainActor.assumeIsolated {
+                self?.scheduleScan(after: 2)
+                self?.official.refresh(.panel)
+            }
         })
     }
 }

@@ -3,42 +3,81 @@ import UsageCore
 
 // MARK: - 用量限额
 
+/// 官方限额：数值与 Claude Code `/usage` 完全一致，不做任何估算
 struct LimitsSection: View {
     let store: UsageStore
     let prefs: Preferences
 
     var body: some View {
-        let money = prefs.money
         let rows = store.limitRows
+        let official = store.official
         VStack(alignment: .leading, spacing: 13) {
             SectionTitle(title: "用量限额") {
-                sourceLabel
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(statusText(official, now: context.date))
+                }
+                .help(statusHelp(official))
             }
-            ForEach(rows) { row in
-                LimitRowView(row: row, threshold: prefs.warningThreshold, money: money)
+            if rows.isEmpty {
+                ForEach(["5 小时", "本周 · 全部模型"], id: \.self) { title in
+                    PlaceholderRow(title: title)
+                }
+            } else {
+                ForEach(rows) { row in
+                    LimitRowView(row: row, threshold: prefs.warningThreshold)
+                }
+            }
+            if rows.isEmpty || official.state.awaitingLogin {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(Self.unavailableReason(official.state))
+                        .font(.caption)
+                        .foregroundStyle(Palette.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if official.state.awaitingLogin {
+                        FooterButton(icon: .terminal, title: "在终端中登录 Claude Code") { store.signInToClaudeCode() }
+                            .padding(.leading, -8)
+                    }
+                }
             }
         }
     }
 
-    @ViewBuilder
-    private var sourceLabel: some View {
-        if store.isUsingOfficialLimits {
-            Text("官方数据")
-                .help("与 Claude Code /usage 相同的官方接口，每分钟同步一次")
-        } else {
-            Text(fallbackReason)
-                .help("官方数据暂不可用，当前按本机 Claude Code 日志的 API 等价费用 ÷ 预算估算。可在设置中查看连接状态。")
+    private func statusText(_ official: OfficialUsageService, now: Date) -> String {
+        guard let usage = official.usage else { return Self.shortReason(official.state) }
+        let synced = "\(Fmt.relative(usage.fetchedAt, now: now))同步"
+        return official.state == .connected ? synced : "\(synced) · \(Self.shortReason(official.state))"
+    }
+
+    private func statusHelp(_ official: OfficialUsageService) -> String {
+        var lines = ["来自 Claude 官方用量接口（与 Claude Code /usage 相同），每 5 分钟同步一次，打开面板时也会同步"]
+        if let usage = official.usage { lines.append("上次同步：\(Self.moment(usage.fetchedAt))") }
+        if official.state != .connected, official.usage != nil { lines.append(Self.unavailableReason(official.state)) }
+        return lines.joined(separator: "\n")
+    }
+
+    static func shortReason(_ state: OfficialUsageService.State) -> String {
+        switch state {
+        case .connected: "已连接"
+        case .connecting: "正在连接…"
+        case .disabled: "已关闭"
+        case .noCredentials: "未登录"
+        case .denied: "未授权"
+        case .expired: "登录已过期"
+        case .signedOut: "需要重新登录"
+        case .failed(let message): message
         }
     }
 
-    private var fallbackReason: String {
-        switch store.official.state {
-        case .disabled: "估算值"
-        case .connecting: "正在连接官方…"
-        case .denied: "估算值 · 未授权"
-        case .noCredentials: "估算值 · 未登录"
-        case .expired: "估算值 · 凭据过期"
-        case .failed, .connected: "估算值"
+    /// 暂时没有官方数据时的说明
+    static func unavailableReason(_ state: OfficialUsageService.State) -> String {
+        switch state {
+        case .connected, .connecting: "正在获取官方用量…"
+        case .disabled: "官方用量已关闭，可在「设置 › 用量」中开启。"
+        case .noCredentials: "没有找到 Claude Code 的登录信息，登录后即可显示官方用量。"
+        case .denied: "没有获得钥匙串授权，请在「设置 › 用量」中重新连接，并在系统弹窗中选择「始终允许」。"
+        case .expired: "Claude Code 的登录已过期。开启「设置 › 用量 › 自动续期登录」，或重新登录。"
+        case .signedOut: "Claude Code 的登录已失效（登录到期或已退出），重新登录后自动恢复。"
+        case .failed(let message): "暂时无法获取官方用量（\(message)），稍后自动重试。"
         }
     }
 }
@@ -46,7 +85,6 @@ struct LimitsSection: View {
 private struct LimitRowView: View {
     let row: LimitRow
     let threshold: Double
-    let money: MoneyFormat
 
     var body: some View {
         let color = Palette.level(row.fraction, warning: threshold)
@@ -56,21 +94,16 @@ private struct LimitRowView: View {
                     .font(.rowLabel)
                     .foregroundStyle(Palette.text)
                 Spacer()
-                Text(Fmt.percent(row.fraction))
+                Text("\(row.percent)%")
                     .font(.rowValue)
                     .foregroundStyle(row.fraction >= threshold ? color : Palette.text)
                     .monospacedDigit()
                     .contentTransition(.numericText(value: row.fraction))
             }
             ThinBar(fraction: row.fraction, color: color)
-            if hasCaption {
-                HStack(spacing: 8) {
-                    Text(detailText)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(resetText(now: context.date))
-                    }
+            if row.reset != .none {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(resetText(now: context.date))
                 }
                 .font(.caption)
                 .foregroundStyle(Palette.tertiary)
@@ -78,53 +111,36 @@ private struct LimitRowView: View {
             }
         }
         .contentShape(Rectangle())
-        .help(helpText)
-    }
-
-    private var hasCaption: Bool {
-        row.localCost != nil || row.reset != .none
-    }
-
-    private var detailText: String {
-        guard let cost = row.localCost else { return "" }
-        var text = row.budget.map { "\(money.whole(cost)) / \(money.whole($0))" } ?? "本机 \(money.whole(cost))"
-        if let since = row.since {
-            text += " · \(since.source == .inferred ? "约" : "")\(LimitsSection.moment(since.date)) 起"
-        }
-        return text
-    }
-
-    /// 速率、预测与起算说明放在悬停提示里，行内文字保持不变
-    private var helpText: String {
-        var lines: [String] = []
-        if let syncedAt = row.syncedAt {
-            lines.append("官方数据 \(LimitsSection.moment(syncedAt)) 同步，之后按本机新增用量推算，每 5 分钟校正一次")
-        }
-        if let rate = row.burnRate, rate > 0 {
-            var line = "近 1 小时 \(money.whole(rate))/时"
-            if let p = row.projected {
-                line += p > 1 ? "，按此速率会在重置前用完" : "，重置前预计 \(Fmt.percent(p))"
-            }
-            lines.append(line)
-        }
-        if let since = row.since {
-            let when = LimitsSection.moment(since.date)
-            switch since.source {
-            case .detected: lines.append("本周额度在 \(when) 之后被中途重置过（官方百分比出现下降），本机费用从这之后算起")
-            case .inferred: lines.append("根据本机费用与官方百分比的变化推算，本周额度约在 \(when) 被中途重置过，本机费用从这时算起。可在设置中手动指定")
-            case .manual: lines.append("本机费用从设置中指定的 \(when) 算起")
-            case .scheduled: break
-            }
-        }
-        return lines.joined(separator: "\n")
+        .help(row.resetsAt.map { "重置时间：\(LimitsSection.moment($0))" } ?? "")
     }
 
     private func resetText(now: Date) -> String {
         switch row.reset {
-        case .countdown(let date): "\(Fmt.countdown(date.timeIntervalSince(now)))后重置"
-        case .weekday(let date): "\(LimitsSection.weekday(date)) 重置"
+        case .countdown(let date): date > now ? "\(Fmt.countdown(date.timeIntervalSince(now)))后重置" : "已重置，正在同步"
+        case .weekday(let date): date > now ? "\(LimitsSection.weekday(date)) 重置" : "已重置，正在同步"
+        case .elapsed: "已重置，正在同步"
         case .idle: "空闲中"
         case .none: ""
+        }
+    }
+}
+
+/// 还没有官方数据时的占位行
+private struct PlaceholderRow: View {
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.rowLabel)
+                    .foregroundStyle(Palette.secondary)
+                Spacer()
+                Text("—")
+                    .font(.rowValue)
+                    .foregroundStyle(Palette.tertiary)
+            }
+            ThinBar(fraction: 0, color: Palette.tertiary)
         }
     }
 }
@@ -154,25 +170,86 @@ extension LimitsSection {
 
 // MARK: - 本期消耗
 
+/// 本月周期 / 本周期 / 每日。等宽标签，选中项用面板里已有的浅色块。
+private struct SpanTabs: View {
+    @Binding var selection: CostSpan
+    @Namespace private var namespace
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(CostSpan.allCases) { span in
+                let selected = span == selection
+                Text(span.title)
+                    .font(.system(size: 12, weight: selected ? .medium : .regular))
+                    .foregroundStyle(selected ? Palette.text : Palette.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 26)
+                    .background {
+                        if selected {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.white.opacity(0.13))
+                                .matchedGeometryEffect(id: "span", in: namespace)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { withAnimation(.quiet) { selection = span } }
+            }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.05)))
+    }
+}
+
 struct CycleSection: View {
     let snapshot: UsageSnapshot
-    let prefs: Preferences
+    @Bindable var prefs: Preferences
 
     @State private var hoveredDay: Int?
     @State private var hoveredToken: String?
 
+    private var period: PeriodUsage? {
+        switch prefs.costSpan {
+        case .day: snapshot.day
+        case .week: snapshot.week
+        case .month: snapshot.billing
+        }
+    }
+
     var body: some View {
         let money = prefs.money
-        let billing = snapshot.billing
-        let tokens = billing.tokens
         let recent = Array(snapshot.daily.suffix(14))
+
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("本期消耗")
+                    .font(.sectionTitle)
+                    .foregroundStyle(Palette.secondary)
+                Text(period.map { UsageCalculator.periodRange(start: $0.start, end: $0.end, calendar: .current) }
+                    ?? "同步每周限额后显示本周区间")
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Palette.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            SpanTabs(selection: $prefs.costSpan)
+            if let billing = period {
+                cycleBody(billing, money: money, recent: recent)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cycleBody(_ billing: PeriodUsage, money: MoneyFormat, recent: [DayUsage]) -> some View {
+        let tokens = billing.tokens
         let costs = CategoryCosts(models: billing.models)
+        let summary = prefs.costSpan == .day
+            ? "当天"
+            : "第 \(billing.dayIndex) / \(billing.dayCount) 天 · 日均 \(money.whole(billing.dailyAverage))"
 
         VStack(alignment: .leading, spacing: 12) {
-            SectionTitle(title: "本期消耗") {
-                Text("\(Self.day(billing.start)) – \(Self.day(billing.lastDay))")
-            }
-
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(money.string(billing.cost))
@@ -191,7 +268,9 @@ struct CycleSection: View {
                         if let i = hoveredDay, let day = recent[safe: i] {
                             Text("\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests)) 次")
                         } else {
-                            Text("第 \(billing.dayIndex) / \(billing.dayCount) 天 · 预计整期 \(money.whole(billing.projectedCost(now: Date())))")
+                            Text(summary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                         }
                     }
                     .font(.caption)

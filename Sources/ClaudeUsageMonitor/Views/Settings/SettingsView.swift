@@ -2,12 +2,12 @@ import SwiftUI
 import UsageCore
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case plan, display, data, general
+    case usage, display, data, general
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .plan: "套餐"
+        case .usage: "用量"
         case .display: "显示"
         case .data: "数据"
         case .general: "通用"
@@ -16,7 +16,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var icon: Icon {
         switch self {
-        case .plan: .gauge
+        case .usage: .gauge
         case .display: .menuBar
         case .data: .database
         case .general: .sliders
@@ -29,7 +29,7 @@ struct SettingsView: View {
     @Bindable var prefs: Preferences
     let store: UsageStore
 
-    @State private var tab: SettingsTab = .plan
+    @State private var tab: SettingsTab = .usage
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,7 +40,7 @@ struct SettingsView: View {
             ScrollView {
                 Group {
                     switch tab {
-                    case .plan: PlanPage(prefs: prefs, store: store)
+                    case .usage: UsagePage(prefs: prefs, store: store)
                     case .display: DisplayPage(prefs: prefs)
                     case .data: DataPage(prefs: prefs, store: store)
                     case .general: GeneralPage(prefs: prefs, store: store)
@@ -94,284 +94,115 @@ private struct TabBar: View {
     }
 }
 
-// MARK: - 套餐
+// MARK: - 用量
 
-private struct PlanPage: View {
+private struct UsagePage: View {
     @Bindable var prefs: Preferences
     let store: UsageStore
 
-    @State private var officialFive = ""
-    @State private var officialWeek = ""
-    @State private var calibratedAt: Date?
-
     var body: some View {
-        let money = prefs.money
-        let interval = UsageCalculator.billingInterval(now: Date(), anchorDay: prefs.billingAnchorDay, calendar: .current)
         let official = store.official
-        let connected = official.state == .connected
+        let billing = store.billingSettings()
+        let clock = store.learnedResetClock
+        let interval = UsageCalculator.billingInterval(
+            now: Date(), anchorDay: billing.billingAnchorDay,
+            hour: billing.billingAnchorHour, minute: billing.billingAnchorMinute,
+            second: billing.billingAnchorSecond, calendar: .current
+        )
         VStack(alignment: .leading, spacing: 0) {
-            SettingsHeader(title: "用量数据")
+            SettingsHeader(title: "官方用量")
             SettingsRow(title: "Claude 官方用量", detail: officialDetail(official)) {
                 SwitchToggle(isOn: $prefs.officialUsageEnabled)
             }
-            if prefs.officialUsageEnabled, !connected, official.state != .connecting {
+            if prefs.officialUsageEnabled {
                 Hairline()
-                HStack {
-                    Text("首次连接时，系统会询问是否允许读取「Claude Code-credentials」，请选择「始终允许」。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 12)
-                    QuietButton(title: "重新连接", prominent: true) { official.refresh(force: true) }
+                SettingsRow(title: "自动续期登录", detail: renewalDetail(official)) {
+                    SwitchToggle(isOn: $prefs.autoRenewLogin)
                 }
-                .padding(.vertical, 11)
+                if needsAttention(official.state) {
+                    Hairline()
+                    HStack {
+                        Text(attentionHint(official.state))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 12)
+                        if official.state.awaitingLogin {
+                            QuietButton(title: "在终端中登录", prominent: true) { store.signInToClaudeCode() }
+                        } else {
+                            QuietButton(title: "重新连接", prominent: true) { official.refresh(.manual) }
+                        }
+                    }
+                    .padding(.vertical, 11)
+                }
             }
-
-            SettingsHeader(title: "本周额度")
-            WeeklyStartRows(prefs: prefs, store: store)
-
-            SettingsHeader(title: "订阅计划")
-            VStack(alignment: .leading, spacing: 8) {
-                PillSegmented(
-                    options: Plan.allCases.map { ($0, $0.title) },
-                    selection: Binding(get: { prefs.plan }, set: { prefs.apply(plan: $0) })
-                )
-                Text(official.detectedPlan != nil
-                     ? "已从 Claude 账号（服务端）识别为 \(official.detectedPlan!.title)"
-                     : "\(prefs.plan.tagline) · 默认额度 5 小时 \(money.whole(prefs.plan.fiveHourBudget)) · 每周 \(money.whole(prefs.plan.weeklyBudget))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.tertiary)
-            }
-            .padding(.vertical, 11)
+            Text("5 小时与每周的百分比只来自官方接口，与 Claude Code /usage 完全一致；暂时取不到时显示上次同步的官方数值并注明时间，不做估算。")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 12)
 
             SettingsHeader(title: "计费周期")
-            SettingsRow(title: "每月扣费日", detail: "当前周期 \(Self.day(interval.start)) – \(Self.day(interval.end.addingTimeInterval(-1)))") {
+            SettingsRow(title: "每月扣费日", detail: "当前周期 \(UsageCalculator.periodRange(start: interval.start, end: interval.end, calendar: .current))") {
                 DropdownButton(options: (1...31).map { ($0, "每月 \($0) 日") }, selection: $prefs.billingAnchorDay)
             }
-
-            SettingsHeader(title: connected ? "额度预算（离线估算与速率预测）" : "额度预算")
-            SettingsRow(title: "5 小时额度", detail: connected && prefs.budgetsCalibrated ? "已根据官方用量自动校准" : "以 API 等价费用衡量") {
-                NumberField(value: $prefs.fiveHourBudget, prefix: "$")
-            }
             Hairline()
-            SettingsRow(title: "每周额度") {
-                NumberField(value: $prefs.weeklyBudget, prefix: "$")
-            }
-            Hairline()
-            SettingsRow(title: "每周重置时间") {
-                HStack(spacing: 6) {
-                    DropdownButton(options: (1...7).map { ($0, Self.weekdays[$0 - 1]) }, selection: $prefs.weeklyResetWeekday)
-                    DropdownButton(options: (0..<48).map { ($0, String(format: "%02d:%02d", $0 / 2, ($0 % 2) * 30)) }, selection: resetSlot)
-                }
-            }
-
-            if !connected {
-            SettingsHeader(title: "对照官方用量校准")
-            SettingsRow(title: "官方显示的用量", detail: "在 Claude 应用的用量面板或 /usage 中查看") {
-                HStack(spacing: 8) {
-                    Text("5 小时").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-                    PercentField(text: $officialFive)
-                    Text("本周").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary).padding(.leading, 4)
-                    PercentField(text: $officialWeek)
-                }
-            }
-            Hairline()
-            HStack {
-                Text(calibrationStatus(money: money))
-                    .font(.system(size: 12))
-                    .foregroundStyle(calibratedAt == nil ? Palette.tertiary : Palette.live)
+            SettingsRow(
+                title: "重置时刻",
+                detail: clock == nil ? "与每周限额相同，同步后自动对齐" : "与每周限额相同，这一刻之前的用量仍计入上一周期"
+            ) {
+                Text(clock.map { String(format: "%02d:%02d:%02d", $0.hour, $0.minute, billing.billingAnchorSecond) } ?? "—")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(clock == nil ? Palette.tertiary : Palette.text)
                     .monospacedDigit()
-                Spacer()
-                QuietButton(title: "校准", prominent: Double(officialFive) != nil || Double(officialWeek) != nil, action: calibrate)
-            }
-            .padding(.vertical, 11)
             }
         }
     }
 
     private func officialDetail(_ official: OfficialUsageService) -> String {
+        let synced = official.usage.map { "上次同步 \(Fmt.relative($0.fetchedAt))" }
         switch official.state {
         case .connected:
-            let plan = " · \((official.detectedPlan ?? prefs.plan).title)"
-            let when = official.usage.map { " · \(Fmt.relative($0.fetchedAt))同步" } ?? ""
-            return "已连接\(plan)\(when)，与 Claude Code /usage 一致"
+            let plan = (official.detectedPlan ?? prefs.plan).map { " · \($0.title)" } ?? ""
+            return "已连接\(plan) · \(synced ?? "刚刚同步")，与 Claude Code /usage 一致"
         case .connecting: return "正在连接…"
-        case .noCredentials: return "未找到 Claude Code 登录信息，请先在终端运行 claude 并登录"
+        case .noCredentials: return "未找到 Claude Code 的登录信息"
         case .denied: return "未获得钥匙串授权"
-        case .expired: return "登录凭据已过期，运行一次 Claude Code 会自动刷新，随后这里自动恢复"
-        case .failed(let message): return "暂时无法获取（\(message)），稍后自动重试"
-        case .disabled: return "已关闭，5 小时与每周用量按本机日志估算"
+        case .expired:
+            return prefs.autoRenewLogin ? "Claude Code 的登录已过期，且无法自动续期，需要重新登录" : "Claude Code 的登录已过期，开启下方的自动续期即可恢复"
+        case .signedOut: return "Claude Code 的登录已失效（登录到期或已退出），需要重新登录"
+        case .failed(let message): return "暂时无法获取（\(message)），稍后自动重试" + (synced.map { " · \($0)" } ?? "")
+        case .disabled: return "已关闭，菜单栏与面板不显示 5 小时 / 每周用量"
         }
     }
 
-    /// 以 30 分钟为粒度的重置时刻
-    private var resetSlot: Binding<Int> {
-        Binding(
-            get: { prefs.weeklyResetHour * 2 + (prefs.weeklyResetMinute >= 30 ? 1 : 0) },
-            set: { slot in
-                prefs.weeklyResetHour = slot / 2
-                prefs.weeklyResetMinute = (slot % 2) * 30
-            }
-        )
+    private func renewalDetail(_ official: OfficialUsageService) -> String {
+        var status: [String] = []
+        if let renewed = official.lastRenewal { status.append("上次续期 \(LimitsSection.moment(renewed))") }
+        if let until = official.loginExpiresAt { status.append("登录有效期至 \(Self.day(until))") }
+        let text = "Claude Code 的登录约 8 小时过期，到期前按 Claude Code 相同的方式续期，不影响 Claude Code 的使用"
+        return status.isEmpty ? text : text + "\n" + status.joined(separator: " · ")
     }
 
-    private func calibrationStatus(money: MoneyFormat) -> String {
-        if let calibratedAt, Date().timeIntervalSince(calibratedAt) < 3 { return "已根据官方用量更新额度" }
-        guard let snap = store.snapshot else { return "暂无本机数据" }
-        return "本机当前：5 小时 \(money.whole(snap.fiveHour.cost)) · 本周 \(money.whole(snap.weekly.cost))"
-    }
-
-    private func calibrate() {
-        guard let snap = store.snapshot else { return }
-        if let p = Double(officialFive), p > 0, snap.fiveHour.cost > 0 {
-            prefs.fiveHourBudget = (snap.fiveHour.cost / (p / 100)).rounded()
+    private func needsAttention(_ state: OfficialUsageService.State) -> Bool {
+        switch state {
+        case .connected, .connecting, .disabled: false
+        default: true
         }
-        if let p = Double(officialWeek), p > 0, snap.weekly.cost > 0 {
-            prefs.weeklyBudget = (snap.weekly.cost / (p / 100)).rounded()
-        }
-        prefs.budgetsCalibrated = true
-        officialFive = ""
-        officialWeek = ""
-        withAnimation(.quiet) { calibratedAt = Date() }
     }
 
-    static let weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+    private func attentionHint(_ state: OfficialUsageService.State) -> String {
+        switch state {
+        case .denied: "首次连接时，系统会询问是否允许读取「Claude Code-credentials」，请选择「始终允许」。"
+        case .noCredentials, .signedOut, .expired: "将打开终端运行 claude auth login，在浏览器中完成授权后自动恢复。"
+        default: "问题解决后会自动恢复，也可以立即重试。"
+        }
+    }
 
     static func day(_ date: Date) -> String {
         let f = DateFormatter()
         f.dateFormat = "M月d日"
         return f.string(from: date)
-    }
-}
-
-/// 本周起算时间：默认自动（例行重置，或检测 / 推算到的中途重置），也可以手动指定
-private struct WeeklyStartRows: View {
-    @Bindable var prefs: Preferences
-    let store: UsageStore
-
-    private static let slotMinutes = 15
-
-    var body: some View {
-        let cycleStart = store.snapshot?.weeklyCycleStart
-            ?? UsageCalculator.weeklyInterval(now: Date(), settings: prefs.usageSettings).start
-        VStack(alignment: .leading, spacing: 0) {
-            SettingsRow(title: "起算时间", detail: detail(cycleStart: cycleStart)) {
-                PillSegmented(
-                    options: [(false, "自动"), (true, "手动")],
-                    selection: Binding(
-                        get: { prefs.weeklyStartOverride != nil },
-                        set: { manual in
-                            withAnimation(.quiet) {
-                                prefs.weeklyStartOverride = manual ? defaultManualStart(cycleStart: cycleStart) : nil
-                            }
-                        }
-                    )
-                )
-            }
-            if let override = prefs.weeklyStartOverride {
-                Hairline()
-                SettingsRow(title: "中途重置发生在", detail: "只对本周期有效，下次例行重置后自动恢复为自动") {
-                    HStack(spacing: 6) {
-                        DropdownButton(options: dayOptions(cycleStart: cycleStart), selection: dayBinding(override, cycleStart: cycleStart))
-                        DropdownButton(options: slotOptions(day: startOfDay(override), cycleStart: cycleStart),
-                                       selection: slotBinding(override, cycleStart: cycleStart))
-                    }
-                }
-                .transition(.opacity)
-            }
-        }
-    }
-
-    private func detail(cycleStart: Date) -> String {
-        let routine = "上次例行重置（\(LimitsSection.weekday(cycleStart))）"
-        guard let snap = store.snapshot else { return "从\(routine)算起" }
-        let when = LimitsSection.moment(snap.weeklyStart)
-        switch snap.weeklyStartSource {
-        case .scheduled:
-            return store.isUsingOfficialLimits ? "从\(routine)算起，检测到中途重置会自动调整" : "从\(routine)算起"
-        case .detected:
-            let prefix = prefs.weeklyStartOverride != nil ? "之后又检测到一次中途重置" : "检测到中途重置"
-            return "\(prefix)：官方百分比在 \(when) 之后出现下降，本机费用从这之后算起"
-        case .inferred:
-            return "推算本周额度约在 \(when) 被中途重置过（根据本机费用与官方百分比的变化），本机费用从这时算起"
-        case .manual:
-            return "本机费用从 \(when) 算起，用于本周用量与额度推算"
-        }
-    }
-
-    // MARK: 手动指定
-
-    private func startOfDay(_ date: Date) -> Date { Calendar.current.startOfDay(for: date) }
-
-    /// 可选范围：本周期起点之后、现在之前
-    private func clamp(_ date: Date, cycleStart: Date) -> Date {
-        min(max(date, cycleStart.addingTimeInterval(60)), Date().addingTimeInterval(-60))
-    }
-
-    private func defaultManualStart(cycleStart: Date) -> Date {
-        let current = store.snapshot?.weeklyStart ?? cycleStart
-        let base = current > cycleStart ? current : max(startOfDay(Date()), cycleStart)
-        let step = Double(Self.slotMinutes * 60)
-        let rounded = Date(timeIntervalSince1970: (base.timeIntervalSince1970 / step).rounded(.down) * step)
-        return clamp(rounded > cycleStart ? rounded : rounded.addingTimeInterval(step), cycleStart: cycleStart)
-    }
-
-    private func dayOptions(cycleStart: Date) -> [(value: Date, title: String)] {
-        let cal = Calendar.current
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "M月d日 EEE"
-        var days: [(Date, String)] = []
-        var day = startOfDay(cycleStart)
-        while day <= Date() {
-            days.append((day, cal.isDateInToday(day) ? "今天" : (cal.isDateInYesterday(day) ? "昨天" : f.string(from: day))))
-            guard let next = cal.date(byAdding: .day, value: 1, to: day) else { break }
-            day = next
-        }
-        return days
-    }
-
-    /// 某一天里可选的时刻（以 15 分钟为粒度）
-    private func validSlots(day: Date, cycleStart: Date) -> [Int] {
-        let now = Date()
-        return (0..<(24 * 60 / Self.slotMinutes)).filter { slot in
-            let t = day.addingTimeInterval(Double(slot * Self.slotMinutes * 60))
-            return t > cycleStart && t < now
-        }
-    }
-
-    private func slotOptions(day: Date, cycleStart: Date) -> [(value: Int, title: String)] {
-        validSlots(day: day, cycleStart: cycleStart).map { slot in
-            let minutes = slot * Self.slotMinutes
-            return (slot, String(format: "%02d:%02d", minutes / 60, minutes % 60))
-        }
-    }
-
-    private func slot(of date: Date) -> Int {
-        Int(date.timeIntervalSince(startOfDay(date)) / 60) / Self.slotMinutes
-    }
-
-    private func dayBinding(_ override: Date, cycleStart: Date) -> Binding<Date> {
-        Binding(
-            get: { startOfDay(override) },
-            set: { day in
-                // 换日期时尽量保留原来的时刻，超出范围就取最接近的可选时刻
-                let valid = validSlots(day: day, cycleStart: cycleStart)
-                let wanted = slot(of: override)
-                guard let chosen = valid.min(by: { abs($0 - wanted) < abs($1 - wanted) }) else { return }
-                prefs.weeklyStartOverride = clamp(day.addingTimeInterval(Double(chosen * Self.slotMinutes * 60)), cycleStart: cycleStart)
-            }
-        )
-    }
-
-    private func slotBinding(_ override: Date, cycleStart: Date) -> Binding<Int> {
-        Binding(
-            get: { slot(of: override) },
-            set: { slot in
-                let day = startOfDay(override)
-                prefs.weeklyStartOverride = clamp(day.addingTimeInterval(Double(slot * Self.slotMinutes * 60)), cycleStart: cycleStart)
-            }
-        )
     }
 }
 
@@ -415,7 +246,7 @@ private struct DisplayPage: View {
             Hairline()
             SettingsRow(title: "预警线", detail: "超过后进度条与菜单栏图标变为琥珀色") {
                 HStack(spacing: 10) {
-                    ThinSlider(value: $prefs.warningThreshold, range: 0.5...0.95, step: 0.05)
+                    ThinSlider(value: $prefs.warningThreshold, range: 0.5...0.95, step: 0.01)
                     Text(Fmt.percent(prefs.warningThreshold))
                         .font(.system(size: 12.5))
                         .foregroundStyle(Palette.secondary)

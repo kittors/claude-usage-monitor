@@ -156,16 +156,74 @@ private func date(_ s: String, _ cal: Calendar = shanghai) -> Date {
 
     i = UsageCalculator.billingInterval(now: date("2026-01-01 00:00"), anchorDay: 1, calendar: cal)
     #expect(i.start == date("2026-01-01 00:00") && i.end == date("2026-02-01 00:00"))
+    #expect(UsageCalculator.periodTitle(start: i.start, end: i.end, calendar: cal) == "1月1日 – 1月31日")
 }
 
-@Test func weeklyIntervalFindsLastReset() {
-    let settings = UsageSettings(weeklyResetWeekday: 7, weeklyResetHour: 22, calendar: shanghai)
-    // 2026-09-28 是周一
-    var i = UsageCalculator.weeklyInterval(now: date("2026-09-28 22:45"), settings: settings)
-    #expect(i.start == date("2026-09-26 22:00") && i.end == date("2026-10-03 22:00"))
-    // 恰好在重置时刻
-    i = UsageCalculator.weeklyInterval(now: date("2026-10-03 22:00"), settings: settings)
-    #expect(i.start == date("2026-10-03 22:00"))
+@Test func billingIntervalStartsAtResetTime() {
+    let cal = shanghai
+    // 28 日 22:00 才换周期：当天 21:00 仍是上一周期
+    var i = UsageCalculator.billingInterval(now: date("2026-09-28 21:00"), anchorDay: 28, hour: 22, calendar: cal)
+    #expect(i.start == date("2026-08-28 22:00") && i.end == date("2026-09-28 22:00"))
+    #expect(UsageCalculator.periodTitle(start: i.start, end: i.end, calendar: cal) == "8月28日 22:00 – 9月28日 21:59")
+
+    i = UsageCalculator.billingInterval(now: date("2026-09-28 22:00"), anchorDay: 28, hour: 22, calendar: cal)
+    #expect(i.start == date("2026-09-28 22:00") && i.end == date("2026-10-28 22:00"))
+
+    // 2 月没有 31 日，时刻仍保留
+    i = UsageCalculator.billingInterval(now: date("2026-03-05 12:00"), anchorDay: 31, hour: 22, minute: 30, calendar: cal)
+    #expect(i.start == date("2026-02-28 22:30") && i.end == date("2026-03-31 22:30"))
+}
+
+@Test func weeklyIntervalFollowsTheOfficialReset() throws {
+    let cal = shanghai
+    // 面板上的「周六 22:00」：下一次重置是 10 月 3 日。9 月 29 日仍属于从 9 月 26 日 22:00 开始的这一周。
+    let reset = date("2026-10-03 22:00")
+    var i = UsageCalculator.weeklyInterval(now: date("2026-09-29 10:37"), reset: reset)
+    #expect(i.start == date("2026-09-26 22:00") && i.end == reset)
+
+    // 重置那一刻起算新的一周
+    i = UsageCalculator.weeklyInterval(now: reset, reset: reset)
+    #expect(i.start == reset && i.end == date("2026-10-10 22:00"))
+
+    i = UsageCalculator.weeklyInterval(now: date("2026-10-03 21:59"), reset: reset)
+    #expect(i.start == date("2026-09-26 22:00") && i.end == reset)
+
+    let now = date("2026-09-29 10:37")
+    let boundary = date("2026-09-26 22:00").timeIntervalSince1970
+    let records = [record(boundary - 3600), record(boundary + 60), record(now.timeIntervalSince1970 - 60)]
+    let snap = UsageCalculator.snapshot(
+        of: IndexSnapshot(records: records, models: ["claude-opus-5-5"]),
+        settings: UsageSettings(billingAnchorDay: 28, billingAnchorHour: 22, weeklyReset: reset, calendar: cal),
+        now: now
+    )
+    let week = try #require(snap.week)
+    // 重置前一小时不算本周；当天的自然日只含现在这条
+    #expect(week.requests == 2)
+    #expect(abs(week.cost - 40) < 1e-9)
+    #expect(week.start == date("2026-09-26 22:00"))
+    #expect(UsageCalculator.periodRange(start: week.start, end: week.end, calendar: cal) == "9月26日 22:00:00 – 10月3日 21:59:59")
+    let today = snap.day
+    #expect(UsageCalculator.periodRange(start: today.start, end: today.end, calendar: cal) == "9月29日 00:00:00 – 9月29日 23:59:59")
+    #expect(UsageCalculator.periodRange(start: snap.billing.start, end: snap.billing.end, calendar: cal) == "9月28日 22:00:00 – 10月28日 21:59:59")
+    #expect(snap.day.requests == 1)
+    #expect(snap.day.start == date("2026-09-29 00:00"))
+}
+
+@Test func usageBeforeResetIsNotCountedInNewPeriod() {
+    let cal = shanghai
+    let now = date("2026-09-29 10:37")
+    let reset = date("2026-09-28 22:00").timeIntervalSince1970
+    // 重置前一小时属于上一周期；按零点切分会把它算进本期，额度偏多
+    let records = [record(reset - 3600), record(reset + 60)]
+    let snap = UsageCalculator.snapshot(
+        of: IndexSnapshot(records: records, models: ["claude-opus-5-5"]),
+        settings: UsageSettings(billingAnchorDay: 28, billingAnchorHour: 22, calendar: cal), now: now
+    )
+    #expect(snap.billing.requests == 1)
+    #expect(abs(snap.billing.cost - 20) < 1e-9)
+    #expect(snap.billing.start == date("2026-09-28 22:00"))
+    #expect(snap.billing.end == date("2026-10-28 22:00"))
+    #expect(snap.billing.dayIndex == 1)
 }
 
 private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
@@ -173,24 +231,23 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
                 session: 0, model: 0, webSearches: 0, flags: 0)
 }
 
-@Test func fiveHourBlocksFollowSessionRules() {
-    let h = 3600.0
-    let base = 1_790_000_000.0 - 1_790_000_000.0.truncatingRemainder(dividingBy: h)  // 整点
-    let records = [record(base + 0.5 * h), record(base + 2 * h), record(base + 5.2 * h), record(base + 6 * h)]
-    // 第一个窗口 [0.5h, 5.5h)，5.2h 仍在其中；6h 开启第二个窗口（精确时刻，不取整）
-    let block = UsageCalculator.activeBlock(records: records, now: base + 6.5 * h)
-    #expect(block?.start == base + 6 * h)
-    #expect(block?.firstIndex == 3)
-    // 第二个窗口结束后没有新请求：无活动窗口
-    #expect(UsageCalculator.activeBlock(records: records, now: base + 11.1 * h) == nil)
-
-    let snapshot = IndexSnapshot(records: records, models: ["claude-opus-5-5"])
-    let settings = UsageSettings(fiveHourBudget: 100, weeklyBudget: 1000, calendar: shanghai)
-    let snap = UsageCalculator.snapshot(of: snapshot, settings: settings, now: Date(timeIntervalSince1970: base + 6.5 * h))
-    // 每条记录 = 1M output × $20，当前窗口只有 6h 那一条
-    #expect(abs(snap.fiveHour.cost - 20) < 1e-9)
-    #expect(abs(snap.fiveHour.fraction - 0.2) < 1e-9)
-    #expect(snap.fiveHour.end == Date(timeIntervalSince1970: base + 11 * h))
+@Test func snapshotCoversBillingPeriodAndDays() {
+    let now = date("2026-09-28 12:00")
+    let t = now.timeIntervalSince1970
+    // 每条记录 = 1M output × $20
+    let records = [record(t - 40 * 86_400), record(t - 2 * 86_400), record(t - 3600), record(t - 60)]
+    let snap = UsageCalculator.snapshot(
+        of: IndexSnapshot(records: records, models: ["claude-opus-5-5"]),
+        settings: UsageSettings(billingAnchorDay: 1, calendar: shanghai), now: now
+    )
+    #expect(snap.totalRecords == 4)
+    #expect(abs(snap.lifetimeCost - 80) < 1e-9)
+    #expect(snap.billing.requests == 3)
+    #expect(abs(snap.billing.cost - 60) < 1e-9)
+    #expect(snap.billing.dayIndex == 28)
+    #expect(abs(snap.billing.dailyAverage - 60.0 / 28) < 1e-9)
+    #expect(abs((snap.today?.cost ?? 0) - 40) < 1e-9)
+    #expect(snap.daily.count == 30)
 }
 
 // MARK: - 格式化
@@ -231,164 +288,31 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(usage.scoped.count == 1)
     #expect(usage.scoped.first?.modelName == "Fable")
     #expect(usage.scoped.first?.limit.resetsAt == Date(timeIntervalSince1970: 1_790_949_600))
+    // 14:00 UTC = 上海 22:00，与面板「周六 22:00」一致；不用 5 小时窗口的时刻
+    let clock = try #require(usage.weeklyResetClock(calendar: shanghai))
+    #expect(clock.hour == 22 && clock.minute == 0)
 }
 
-@Test func officialWindowsOverrideLocalWindows() {
-    let h = 3600.0
-    let base = 1_790_000_000.0
-    let records = [record(base), record(base + 2 * h), record(base + 3 * h)]
-    let snapshot = IndexSnapshot(records: records, models: ["claude-opus-5-5"])
-    // 官方窗口在 base+1.5h 开始（例如这段时间里还有其他设备的用量），应只统计之后的两条
-    let official = DateInterval(start: Date(timeIntervalSince1970: base + 1.5 * h), end: Date(timeIntervalSince1970: base + 6.5 * h))
-    let settings = UsageSettings(fiveHourBudget: 100, weeklyBudget: 1000, calendar: shanghai, fiveHourWindow: official)
-    let snap = UsageCalculator.snapshot(of: snapshot, settings: settings, now: Date(timeIntervalSince1970: base + 3.5 * h))
-    #expect(abs(snap.fiveHour.cost - 40) < 1e-9)
-    #expect(snap.fiveHour.requests == 2)
-    #expect(snap.fiveHour.end == official.end)
-    #expect(snap.fiveHour.isActive)
+@Test func weeklyResetClockIgnoresFiveHourAndRoundsSubseconds() throws {
+    let fiveOnly = try OfficialUsage.decode(Data(#"{"five_hour":{"utilization":19,"resets_at":"2026-09-29T02:48:07Z"}}"#.utf8))
+    #expect(fiveOnly.weeklyResetClock(calendar: shanghai) == nil)
 
-    // 最近一次官方同步之后的本机费用（按记录时间统计，用于两次同步之间的推算）
-    var synced = settings
-    synced.officialSyncedAt = Date(timeIntervalSince1970: base + 2.5 * h)
-    let later = UsageCalculator.snapshot(of: snapshot, settings: synced, now: Date(timeIntervalSince1970: base + 3.5 * h))
-    #expect(abs(later.costSinceSync - 20) < 1e-9)
-    #expect(snap.costSinceSync == 0)
+    // 13:59:59.6Z 就近到 14:00Z，上海时间 22:00
+    let almost = try OfficialUsage.decode(Data(#"{"seven_day":{"utilization":1,"resets_at":"2026-10-03T13:59:59.6Z"}}"#.utf8))
+    let clock = try #require(almost.weeklyResetClock(calendar: shanghai))
+    #expect(clock.hour == 22 && clock.minute == 0)
+
+    let scoped = OfficialUsage(scoped: [ScopedLimit(modelName: "Fable", limit: OfficialLimit(utilization: 0, resetsAt: date("2026-10-03 22:15")))])
+    let scopedClock = try #require(scoped.weeklyResetClock(calendar: shanghai))
+    #expect(scopedClock.hour == 22 && scopedClock.minute == 15)
 }
 
-// MARK: - 周额度中途重置
-
-/// 每 6 分钟一条、每条 $5（1M output 单价 $20 × 0.25M），即每小时 $50
-private func steadyRecords(from start: Double, hours: Double) -> [UsageRecord] {
-    stride(from: start + 360, to: start + hours * 3600, by: 360).map { record($0, output: 250_000) }
-}
-
-/// 按官方口径生成观测：只统计 `countFrom` 之后的用量，百分比取整，只在变化时记录
-private func officialObservations(records: [UsageRecord], countFrom: Double, budget: Double, after: Double) -> [WindowObservation] {
-    var result: [WindowObservation] = []
-    var acc = 0.0
-    for r in records {
-        if r.time >= countFrom { acc += 5 }
-        guard r.time > after else { continue }
-        let u = (100 * acc / budget).rounded(.down)
-        if result.last?.utilization != u { result.append(WindowObservation(time: r.time + 30, utilization: u)) }
-    }
-    return result
-}
-
-private let cycleStart = 1_790_000_000.0
-
-@Test func infersMidWeekResetFromOfficialPercentages() throws {
-    let h = 3600.0
-    let records = steadyRecords(from: cycleStart, hours: 48)
-    let costs = Array(repeating: 5.0, count: records.count)
-    let reset = cycleStart + 30 * h
-    // 重置之后才开始观测（App 当时没在运行），官方只统计重置之后的用量
-    let obs = officialObservations(records: records, countFrom: reset, budget: 1000, after: reset + 2 * h)
-    #expect(obs.count >= 50)
-    let result = try #require(UsageCalculator.inferResetStart(records: records, costs: costs, windowStart: cycleStart, observations: obs))
-    #expect(abs(result.start - reset) < 0.3 * h)
-    #expect(abs(result.budget - 1000) < 30)
-}
-
-@Test func withoutResetTheCycleStartIsKept() throws {
-    let h = 3600.0
-    let records = steadyRecords(from: cycleStart, hours: 40)
-    let costs = Array(repeating: 5.0, count: records.count)
-    let obs = officialObservations(records: records, countFrom: cycleStart, budget: 1000, after: cycleStart + 2 * h)
-    let result = try #require(UsageCalculator.inferResetStart(records: records, costs: costs, windowStart: cycleStart, observations: obs))
-    #expect(result.start == cycleStart)
-    #expect(abs(result.budget - 1000) < 30)
-}
-
-@Test func inconsistentObservationsAreIgnored() {
-    let h = 3600.0
-    let records = steadyRecords(from: cycleStart, hours: 40)
-    let costs = Array(repeating: 5.0, count: records.count)
-    var obs = officialObservations(records: records, countFrom: cycleStart, budget: 1000, after: cycleStart + 2 * h)
-    // 观测期间其他设备用掉了 10%：本机费用解释不了这部分变化，不下结论
-    for i in (obs.count / 2)..<obs.count { obs[i].utilization += 10 }
-    #expect(UsageCalculator.inferResetStart(records: records, costs: costs, windowStart: cycleStart, observations: obs) == nil)
-    // 观测太少也不下结论
-    #expect(UsageCalculator.inferResetStart(records: records, costs: costs, windowStart: cycleStart, observations: Array(obs.prefix(2))) == nil)
-}
-
-@Test func weeklyStartPrefersLatestKnownReset() {
-    let h = 3600.0
-    let records = steadyRecords(from: cycleStart, hours: 48)
-    let reset = cycleStart + 30 * h
-    let obs = officialObservations(records: records, countFrom: reset, budget: 1000, after: reset + 2 * h)
-    let index = IndexSnapshot(records: records, models: ["claude-opus-5-5"])
-    let now = Date(timeIntervalSince1970: cycleStart + 48 * h)
-    var settings = UsageSettings(
-        fiveHourBudget: 100, weeklyBudget: 5000, calendar: shanghai,
-        weeklyWindow: DateInterval(start: Date(timeIntervalSince1970: cycleStart), duration: 7 * 86_400),
-        weeklyObservations: obs
-    )
-
-    // 自动推算：本机费用从重置时起算，预算不受重置前用量的污染
-    var snap = UsageCalculator.snapshot(of: index, settings: settings, now: now)
-    #expect(snap.weeklyCycleStart == Date(timeIntervalSince1970: cycleStart))
-    #expect(snap.weeklyStartSource == .inferred)
-    #expect(abs(snap.weeklyStart.timeIntervalSince1970 - reset) < 0.3 * h)
-    #expect(abs(snap.weekly.cost - 900) < 20)
-    #expect(abs((snap.weeklyInferredBudget ?? 0) - 1000) < 30)
-
-    // 手动指定优先于推算
-    let manual = Date(timeIntervalSince1970: reset - 2 * h)
-    settings.weeklyStartOverride = manual
-    snap = UsageCalculator.snapshot(of: index, settings: settings, now: now)
-    #expect(snap.weeklyStartSource == .manual)
-    #expect(snap.weeklyStart == manual)
-    #expect(abs((snap.weeklyInferredBudget ?? 0) - 1000) < 30)
-
-    // 之后又检测到一次更晚的重置：以检测结果为准
-    let floor = Date(timeIntervalSince1970: reset + h)
-    settings.weeklyResetFloor = floor
-    snap = UsageCalculator.snapshot(of: index, settings: settings, now: now)
-    #expect(snap.weeklyStartSource == .detected)
-    #expect(snap.weeklyStart == floor)
-
-    // 上一个周期留下的手动时间不再生效
-    settings.weeklyResetFloor = nil
-    settings.weeklyStartOverride = Date(timeIntervalSince1970: cycleStart - h)
-    snap = UsageCalculator.snapshot(of: index, settings: settings, now: now)
-    #expect(snap.weeklyStartSource == .inferred)
-}
-
-@Test func observationLogConfirmsDropsBeforeTreatingThemAsResets() {
-    var log = WeeklyObservationLog()
-    let end = Date(timeIntervalSince1970: 2_000_000)
-    func at(_ minutes: Double) -> Date { Date(timeIntervalSince1970: 1_000_000 + minutes * 60) }
-
-    let accepted = log.record(utilization: 10, resetsAt: end, at: at(0))
-    #expect(accepted)
-    log.record(utilization: 10, resetsAt: end, at: at(1))
-    log.record(utilization: 11, resetsAt: end, at: at(2))
-    #expect(log.observations.map(\.utilization) == [10, 11])
-    #expect(log.observations.last?.time == at(2).timeIntervalSince1970)
-    // 同一次请求重复传入
-    let duplicate = log.record(utilization: 12, resetsAt: end, at: at(2))
-    #expect(!duplicate)
-
-    // 只出现一次的异常值不算重置
-    log.record(utilization: 0, resetsAt: end, at: at(3))
-    log.record(utilization: 11, resetsAt: end, at: at(4))
-    #expect(log.resetFloor == nil)
-    #expect(log.observations.map(\.utilization) == [10, 11])
-
-    // 连续两次明显下降：确认中途重置，下界是最后一次看到原有水平的时间
-    log.record(utilization: 11, resetsAt: end, at: at(30))
-    log.record(utilization: 1, resetsAt: end, at: at(31))
-    log.record(utilization: 2, resetsAt: end, at: at(32))
-    #expect(log.resetFloor == at(30).timeIntervalSince1970)
-    #expect(log.observations.map(\.utilization) == [1, 2])
-
-    // 例行重置进入新周期：重新开始
-    log.record(utilization: 0, resetsAt: end.addingTimeInterval(7 * 86_400), at: at(40))
-    #expect(log.resetFloor == nil)
-    #expect(log.observations.map(\.utilization) == [0])
-
-    // 持久化往返
-    let data = try! JSONEncoder().encode(log)
-    #expect(try! JSONDecoder().decode(WeeklyObservationLog.self, from: data) == log)
+@Test func officialPercentRoundsDownLikeClaudeCode() {
+    // Claude Code /usage 显示 Math.floor(utilization)
+    #expect(OfficialLimit(utilization: 71.9, resetsAt: nil).percent == 71)
+    #expect(OfficialLimit(utilization: 12, resetsAt: nil).percent == 12)
+    #expect(OfficialLimit(utilization: 0.4, resetsAt: nil).percent == 0)
+    #expect(OfficialLimit(utilization: 104.2, resetsAt: nil).percent == 104)
+    #expect(OfficialLimit(utilization: .nan, resetsAt: nil).percent == 0)
+    #expect(abs(OfficialLimit(utilization: 79.99, resetsAt: nil).fraction - 0.79) < 1e-9)
 }

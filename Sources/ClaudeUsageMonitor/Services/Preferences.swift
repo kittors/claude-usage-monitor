@@ -25,8 +25,8 @@ enum MenuBarIcon: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .mascot: "Clawd 吉祥物"
-        case .logo: "Claude 标志"
+        case .mascot: L10n.tNow("Clawd 吉祥物", "Clawd")
+        case .logo: L10n.tNow("Claude 标志", "Claude logo")
         }
     }
 }
@@ -37,10 +37,10 @@ enum MenuBarStyle: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .icon: "仅图标"
-        case .iconPercent: "图标 + 百分比"
-        case .ringPercent: "圆环 + 百分比"
-        case .dualBars: "图标 + 双条"
+        case .icon: L10n.tNow("仅图标", "Icon")
+        case .iconPercent: L10n.tNow("图标 + 百分比", "Icon + percent")
+        case .ringPercent: L10n.tNow("圆环 + 百分比", "Ring + percent")
+        case .dualBars: L10n.tNow("图标 + 双条", "Icon + bars")
         }
     }
 }
@@ -51,11 +51,11 @@ enum MenuBarMetric: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .fiveHour: "5 小时"
-        case .weekly: "本周百分比"
-        case .today: "每日费用"
-        case .week: "每周费用"
-        case .cycle: "每月费用"
+        case .fiveHour: L10n.tNow("5 小时", "5-hour")
+        case .weekly: L10n.tNow("本周百分比", "Weekly percent")
+        case .today: L10n.tNow("每日费用", "Today")
+        case .week: L10n.tNow("每周费用", "This week")
+        case .cycle: L10n.tNow("每月费用", "This month")
         }
     }
 }
@@ -67,9 +67,9 @@ enum CostSpan: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .month: "本月周期"
-        case .week: "本周期"
-        case .day: "每日"
+        case .month: L10n.tNow("本月周期", "This month")
+        case .week: L10n.tNow("本周期", "This week")
+        case .day: L10n.tNow("每日", "Today")
         }
     }
 }
@@ -112,10 +112,20 @@ final class Preferences {
     }
     var dataDirectory: String? { didSet { save(dataDirectory, "dataDirectory") } }
     var currency: MoneyFormat.Unit { didSet { save(currency.rawValue, "currency") } }
-    var exchangeRate: Double { didSet { save(exchangeRate, "exchangeRate") } }
+    /// 界面语言。默认跟随系统。
+    var appLanguage: AppLanguage {
+        didSet {
+            save(appLanguage.rawValue, "appLanguage")
+            Localization.shared.apply(appLanguage)
+        }
+    }
     var menuBarIcon: MenuBarIcon { didSet { save(menuBarIcon.rawValue, "menuBarIcon") } }
     var menuBarStyle: MenuBarStyle { didSet { save(menuBarStyle.rawValue, "menuBarStyle") } }
     var menuBarMetric: MenuBarMetric { didSet { save(menuBarMetric.rawValue, "menuBarMetric") } }
+    /// 菜单栏数值右侧显示出口安不安全。
+    var showExitSafety: Bool { didSet { save(showExitSafety, "showExitSafety") } }
+    /// 本应用访问 Claude 的官方请求只走 IPv4。
+    var blockIPv6: Bool { didSet { save(blockIPv6, "blockIPv6") } }
     /// 本期消耗看哪一段。默认本周，因为额度按周重置。
     var costSpan: CostSpan { didSet { save(costSpan.rawValue, "costSpan") } }
     /// 上次同步到的每周限额重置时间，用来在下次同步前继续对齐本周。
@@ -129,14 +139,16 @@ final class Preferences {
     var notificationsEnabled: Bool { didSet { save(notificationsEnabled, "notificationsEnabled") } }
     /// 使用 Claude 官方用量接口（读取 Claude Code 的登录凭据）
     var officialUsageEnabled: Bool { didSet { save(officialUsageEnabled, "officialUsageEnabled") } }
-    /// Claude Code 的登录过期时自动续期（与 Claude Code 相同的流程）
+    /// 官方用量和续期的出口。空字符串表示系统代理。
+    var officialProxy: String { didSet { save(officialProxy, "officialProxy") } }
+    /// Claude Code 的登录过期时自动续期。默认关闭：续期会向 Anthropic 更换登录。
     var autoRenewLogin: Bool { didSet { save(autoRenewLogin, "autoRenewLogin") } }
 
     private init() {
         let d = UserDefaults.standard
         // 1.0 用于本地估算的设置已经不再需要
         for key in ["fiveHourBudget", "weeklyBudget", "budgetsCalibrated", "weeklyResetWeekday", "weeklyResetHour",
-                    "weeklyResetMinute", "weeklyStartOverride", "weeklyResetTracker"] {
+                    "weeklyResetMinute", "weeklyStartOverride", "weeklyResetTracker", "exchangeRate"] {
             d.removeObject(forKey: key)
         }
         plan = Plan(rawValue: d.string(forKey: "plan") ?? "")
@@ -146,16 +158,25 @@ final class Preferences {
         billingAnchorSecond = d.object(forKey: "billingAnchorSecond") as? Int
         dataDirectory = d.string(forKey: "dataDirectory")
         currency = MoneyFormat.Unit(rawValue: d.string(forKey: "currency") ?? "") ?? .usd
-        exchangeRate = d.object(forKey: "exchangeRate") as? Double ?? 7.1
+        appLanguage = AppLanguage(rawValue: d.string(forKey: "appLanguage") ?? "") ?? .system
         menuBarIcon = MenuBarIcon(rawValue: d.string(forKey: "menuBarIcon") ?? "") ?? .mascot
         menuBarStyle = MenuBarStyle(rawValue: d.string(forKey: "menuBarStyle") ?? "") ?? .iconPercent
         menuBarMetric = MenuBarMetric(rawValue: d.string(forKey: "menuBarMetric") ?? "") ?? .fiveHour
+        showExitSafety = d.object(forKey: "showExitSafety") as? Bool ?? true
+        blockIPv6 = d.object(forKey: "blockIPv6") as? Bool ?? false
         costSpan = CostSpan(rawValue: d.string(forKey: "costSpan") ?? "") ?? .week
         weeklyResetAt = (d.object(forKey: "weeklyResetAt") as? Double).map { Date(timeIntervalSince1970: $0) }
         warningThreshold = d.object(forKey: "warningThreshold") as? Double ?? 0.8
         notificationsEnabled = d.object(forKey: "notificationsEnabled") as? Bool ?? true
         officialUsageEnabled = d.object(forKey: "officialUsageEnabled") as? Bool ?? true
-        autoRenewLogin = d.object(forKey: "autoRenewLogin") as? Bool ?? true
+        officialProxy = d.string(forKey: "officialProxy") ?? ""
+        // 旧版本把自动续期默认写成了开启。这一版只关闭一次，之后尊重用户自己的选择。
+        if d.object(forKey: "didDisableAutoRenewForSafety") == nil {
+            d.set(true, forKey: "didDisableAutoRenewForSafety")
+            autoRenewLogin = false
+        } else {
+            autoRenewLogin = d.object(forKey: "autoRenewLogin") as? Bool ?? false
+        }
     }
 
     private func save(_ value: Any?, _ key: String) {
@@ -175,7 +196,10 @@ final class Preferences {
         )
     }
 
-    var money: MoneyFormat { MoneyFormat(unit: currency, rate: exchangeRate) }
+    var money: MoneyFormat {
+        _ = ExchangeRates.shared.fetchedAt
+        return MoneyFormat(unit: currency, rate: ExchangeRates.shared.rate(for: currency))
+    }
 
     static var defaultDataDirectories: [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser

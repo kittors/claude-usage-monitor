@@ -22,6 +22,11 @@ public struct ScopedLimit: Sendable, Equatable, Identifiable {
     public var modelName: String
     public var limit: OfficialLimit
     public var id: String { modelName }
+
+    public init(modelName: String, limit: OfficialLimit) {
+        self.modelName = modelName
+        self.limit = limit
+    }
 }
 
 public struct OfficialUsage: Sendable, Equatable {

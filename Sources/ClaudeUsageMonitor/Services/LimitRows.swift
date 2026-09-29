@@ -39,21 +39,21 @@ extension UsageStore {
         let five = usage.fiveHour ?? OfficialLimit(utilization: 0, resetsAt: nil)
         if let reset = five.resetsAt {
             rows.append(reset > now
-                ? LimitRow(id: "five", title: "5 小时", percent: five.percent, reset: .countdown(reset), resetsAt: reset)
-                : LimitRow(id: "five", title: "5 小时", percent: 0, reset: .elapsed, resetsAt: reset))
+                ? LimitRow(id: "five", title: L10n.tNow("5 小时", "5-hour"), percent: five.percent, reset: .countdown(reset), resetsAt: reset)
+                : LimitRow(id: "five", title: L10n.tNow("5 小时", "5-hour"), percent: 0, reset: .elapsed, resetsAt: reset))
         } else {
-            rows.append(LimitRow(id: "five", title: "5 小时", percent: five.percent, reset: .idle))
+            rows.append(LimitRow(id: "five", title: L10n.tNow("5 小时", "5-hour"), percent: five.percent, reset: .idle))
         }
 
         if let week = usage.sevenDay {
-            rows.append(weekly(id: "week", title: "本周 · 全部模型", week, now: now))
+            rows.append(weekly(id: "week", title: L10n.tNow("本周 · 全部模型", "Week · all models"), week, now: now))
         }
         for scoped in usage.scoped {
-            rows.append(weekly(id: "scoped-\(scoped.modelName)", title: "本周 · \(scoped.modelName)", scoped.limit, now: now))
+            rows.append(weekly(id: "scoped-\(scoped.modelName)", title: L10n.tNow("本周 · \(scoped.modelName)", "Week · \(scoped.modelName)"), scoped.limit, now: now))
         }
         for (name, limit) in [("Sonnet", usage.sevenDaySonnet), ("Opus", usage.sevenDayOpus)] {
             guard let limit, limit.percent > 0, !usage.scoped.contains(where: { $0.modelName.hasPrefix(name) }) else { continue }
-            rows.append(weekly(id: "family-\(name)", title: "本周 · \(name)", limit, now: now))
+            rows.append(weekly(id: "family-\(name)", title: L10n.tNow("本周 · \(name)", "Week · \(name)"), limit, now: now))
         }
         return rows
     }

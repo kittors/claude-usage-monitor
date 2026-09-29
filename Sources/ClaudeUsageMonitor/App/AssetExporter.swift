@@ -38,11 +38,11 @@ enum AssetExporter {
 
         // 菜单栏图标预览（@4x，便于检查像素对齐）
         for (name, input) in [
-            ("menubar-mascot", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, level: .normal)),
-            ("menubar-mascot-armsup", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, level: .normal, pose: .armsUp)),
-            ("menubar-logo", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, level: .normal)),
-            ("menubar-ring", StatusIconRenderer.Input(icon: .mascot, style: .ringPercent, text: "71%", primary: 0.71, secondary: 0.65, level: .normal)),
-            ("menubar-bars-warning", StatusIconRenderer.Input(icon: .mascot, style: .dualBars, text: nil, primary: 0.86, secondary: 0.65, level: .warning)),
+            ("menubar-mascot", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-mascot-armsup", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71, pose: .armsUp)),
+            ("menubar-logo", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-ring", StatusIconRenderer.Input(icon: .mascot, style: .ringPercent, text: "71%", primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-bars-warning", StatusIconRenderer.Input(icon: .mascot, style: .dualBars, text: nil, primary: 0.86, secondary: 0.65, fraction: 0.86)),
         ] {
             let image = StatusIconRenderer.image(input)
             let scale: CGFloat = 4

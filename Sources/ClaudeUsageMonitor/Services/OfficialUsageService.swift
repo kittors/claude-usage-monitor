@@ -246,7 +246,13 @@ final class OfficialUsageService {
 
     @ObservationIgnored var onChange: (() -> Void)?
     /// 登录过期时自动续期（与偏好设置同步）
-    @ObservationIgnored var autoRenew = true
+    @ObservationIgnored var autoRenew = false
+    /// 非空时，用量和续期都从这里出去；空则使用系统代理
+    @ObservationIgnored var outboundProxy: OutboundProxy?
+    /// 打开后，用量、续期和出口检查都只走 IPv4。
+    @ObservationIgnored var blockIPv6 = false
+    /// Claude Code 正在运行，或会话日志刚刚有写入
+    @ObservationIgnored var claudeActive = false
     @ObservationIgnored private var credentials: ClaudeOAuth.Credentials?
     @ObservationIgnored private var inFlight = false
     @ObservationIgnored private var lastAttempt = Date.distantPast
@@ -261,18 +267,21 @@ final class OfficialUsageService {
     @ObservationIgnored private var loginWatch: Timer?
     @ObservationIgnored private let queue = DispatchQueue(label: "claude-usage-monitor.official", qos: .utility)
 
+    init() {
+        loadCachedUsage()
+    }
+
     nonisolated static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     nonisolated static let profileEndpoint = URL(string: "https://api.anthropic.com/api/oauth/profile")!
     nonisolated private static let log = Logger(subsystem: "io.github.kittors.ClaudeUsageMonitor", category: "official")
 
-    /// 定时同步的间隔：接口有频率限制（每分钟请求一次，十几次后就会返回 429）
-    static let syncInterval: TimeInterval = 5 * 60
-    /// 打开面板、窗口重置等即时同步的最小间隔
+    /// 接口大约每分钟允许一次。会话进行中的后台同步、打开面板、重置补拉都守这个间隔。
     static let minimumSpacing: TimeInterval = 60
 
     func setEnabled(_ enabled: Bool) {
         if enabled {
             if state == .disabled { state = .connecting }
+            loadCachedUsage()
             refresh(.manual)
         } else {
             state = .disabled
@@ -284,15 +293,24 @@ final class OfficialUsageService {
 
     func refresh(_ trigger: Trigger = .timer) {
         guard state != .disabled, !inFlight else { return }
+        // 出口在中国大陆、香港或澳门，或还没确认位置时，不访问官方用量。
+        guard !NetworkPlace.shared.blocksOfficialUsage else { return }
         let now = Date()
         guard now >= rateLimitedUntil else { return }
         let sinceAttempt = now.timeIntervalSince(lastAttempt)
         switch trigger {
         case .timer:
             guard state != .denied, now >= retryAfter else { return }
-            // 定时同步；窗口到了重置时间也立即同步，尽快拿到新窗口的数据；等待登录时每分钟读取一次钥匙串
-            guard sinceAttempt >= Self.syncInterval - 5 || (windowHasReset(now) && sinceAttempt >= Self.minimumSpacing)
-                || state.awaitingLogin else { return }
+            if state.awaitingLogin {
+                guard sinceAttempt >= Self.minimumSpacing else { return }
+            } else if windowHasReset(now) {
+                guard sinceAttempt >= Self.minimumSpacing else { return }
+            } else if claudeActive {
+                // 只在 Claude Code 正在使用时后台同步，节奏不超过接口允许的大约一分钟一次
+                guard sinceAttempt >= Self.minimumSpacing else { return }
+            } else {
+                return
+            }
         case .panel:
             if state.awaitingLogin {
                 // 等待登录时只读取钥匙串、不发请求：打开面板就检查一次，登录后立即恢复
@@ -312,7 +330,9 @@ final class OfficialUsageService {
             cached: credentials,
             autoRenew: autoRenew,
             wantsProfile: now.timeIntervalSince(lastProfileFetch) > 6 * 3600,
-            deadRefreshToken: deadRefreshToken
+            deadRefreshToken: deadRefreshToken,
+            proxy: outboundProxy,
+            blockIPv6: blockIPv6
         )
         queue.async {
             let outcome = Self.fetch(request)
@@ -357,6 +377,8 @@ final class OfficialUsageService {
         var autoRenew: Bool
         var wantsProfile: Bool
         var deadRefreshToken: String?
+        var proxy: OutboundProxy?
+        var blockIPv6: Bool
     }
 
     private enum Outcome {
@@ -370,11 +392,13 @@ final class OfficialUsageService {
         case unauthorized
         case rateLimited(TimeInterval)
         case failed(String)
+        /// 出口不是 Claude 的可用出口，没有发送用量请求
+        case exitBlocked
 
         /// 只读取了钥匙串、没有发出请求（等待登录时会频繁出现）
         var isLocal: Bool {
             switch self {
-            case .credentialFailure, .expired, .signedOut(.none): true
+            case .credentialFailure, .expired, .signedOut(.none), .exitBlocked: true
             default: false
             }
         }
@@ -397,14 +421,15 @@ final class OfficialUsageService {
             state = .connected
             retryAfter = .distantPast
             rateLimitStreak = 0
+            saveCachedUsage(usage)
         case .credentialFailure(let failure):
             credentials = nil
             state = switch failure {
             case .denied: .denied
             case .signedOut: .signedOut
             case .notFound, .invalid: .noCredentials
-            case .locked: .failed("钥匙串已锁定")
-            case .unreadable: .failed("无法读取钥匙串")
+            case .locked: .failed(L10n.tNow("钥匙串已锁定", "Keychain is locked"))
+            case .unreadable: .failed(L10n.tNow("无法读取钥匙串", "Could not read the keychain"))
             }
             if state.awaitingLogin { signedOut() }
             retryAfter = now.addingTimeInterval(60)
@@ -424,17 +449,19 @@ final class OfficialUsageService {
             retryAfter = now.addingTimeInterval(delay)
         case .unauthorized:
             credentials = nil
-            state = autoRenew ? .failed("授权失败") : .expired
+            state = autoRenew ? .failed(L10n.tNow("授权失败", "Authorization failed")) : .expired
             retryAfter = now.addingTimeInterval(5 * 60)
         case .rateLimited(let retry):
             // 5 分钟起，每次翻倍，最长 30 分钟
             rateLimitStreak += 1
             let backoff = min(30 * 60, 5 * 60 * pow(2, Double(rateLimitStreak - 1)))
             rateLimitedUntil = now.addingTimeInterval(max(retry, backoff))
-            state = .failed("请求过于频繁")
+            state = .failed(L10n.tNow("请求过于频繁", "Too many requests"))
         case .failed(let message):
             state = .failed(message)
             retryAfter = now.addingTimeInterval(60)
+        case .exitBlocked:
+            break
         }
         // 等待登录期间状态不变的检查不重复记录
         if state != previous || !outcome.isLocal { Self.record(outcome, state: state, usage: usage) }
@@ -458,6 +485,7 @@ final class OfficialUsageService {
         case .unauthorized: "unauthorized"
         case .rateLimited(let retry): "rate-limited retry-after=\(Int(retry))s"
         case .failed(let message): "failed \(message)"
+        case .exitBlocked: "exit blocked"
         }
         let five = usage?.fiveHour.map { "\($0.percent)%" } ?? "-"
         let week = usage?.sevenDay.map { "\($0.percent)%" } ?? "-"
@@ -470,6 +498,9 @@ final class OfficialUsageService {
     nonisolated(unsafe) private static var forceRenewPending = ProcessInfo.processInfo.environment["CUM_FORCE_RENEW"] == "1"
 
     nonisolated private static func fetch(_ r: FetchRequest) -> Outcome {
+        let exit = ClaudeExit.probe(proxy: r.proxy, blockIPv6: r.blockIPv6)
+        DispatchQueue.main.async { NetworkPlace.shared.adopt(exit) }
+        guard let place = exit.place, !place.restrictsUsage else { return .exitBlocked }
         var renewed = false
         var current: ClaudeOAuth.Credentials
         if let cached = r.cached, !cached.needsRefresh() {
@@ -498,21 +529,21 @@ final class OfficialUsageService {
             }
         }
 
-        var result = request(token: current.accessToken)
+        var result = request(token: current.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
         if case .unauthorized = result {
             // 与 Claude Code 收到 401 时的处理相同：钥匙串里已有新令牌就直接用，否则强制续期后重试
             if case .success(let loaded) = CredentialStore.load(), loaded.stored.credentials.accessToken != current.accessToken {
                 current = loaded.stored.credentials
-                result = request(token: current.accessToken)
+                result = request(token: current.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
             } else {
                 switch renew(current, request: r, force: true) {
                 case .renewed(let c):
                     current = c
                     renewed = true
-                    result = request(token: c.accessToken)
+                    result = request(token: c.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
                 case .current(let c) where c.accessToken != current.accessToken:
                     current = c
-                    result = request(token: c.accessToken)
+                    result = request(token: c.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
                 case .current:
                     break
                 case .unavailable(let outcome):
@@ -522,7 +553,7 @@ final class OfficialUsageService {
         }
         switch result {
         case .success(let usage):
-            return .success(usage, current, r.wantsProfile ? profile(token: current.accessToken) : nil, renewed: renewed)
+            return .success(usage, current, r.wantsProfile ? profile(token: current.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6) : nil, renewed: renewed)
         case .unauthorized: return .unauthorized
         case .rateLimited(let t): return .rateLimited(t)
         case .failed(let m): return .failed(m)
@@ -544,7 +575,7 @@ final class OfficialUsageService {
         case .failure(let failure): return .unavailable(.credentialFailure(failure))
         }
         if case .keychain = location, KeychainTool.isLocked {
-            return .unavailable(.renewFailed("钥匙串已锁定", retryIn: 60))
+            return .unavailable(.renewFailed(L10n.tNow("钥匙串已锁定", "Keychain is locked"), retryIn: 60))
         }
 
         let locks = ClaudeCodeLocks()
@@ -554,7 +585,7 @@ final class OfficialUsageService {
                 return latest.stored
             },
             write: { CredentialStore.save($0, to: location) },
-            send: { send($0) },
+            send: { send($0, proxy: r.proxy, blockIPv6: r.blockIPv6) },
             acquireRefreshLock: { try locks.acquireRefreshLock() },
             acquireWriteLock: { try locks.acquireStorageWriteLock() }
         )
@@ -569,15 +600,15 @@ final class OfficialUsageService {
         case .failed(let failure):
             log.error("renewal failed: \(String(describing: failure), privacy: .public)")
             switch failure {
-            case .locked: return .unavailable(.renewFailed("Claude Code 正在续期", retryIn: 30))
+            case .locked: return .unavailable(.renewFailed(L10n.tNow("Claude Code 正在续期", "Claude Code is renewing"), retryIn: 30))
             case .noCredentials:
                 if case .failure(let failure) = CredentialStore.load() { return .unavailable(.credentialFailure(failure)) }
                 return .unavailable(.credentialFailure(.notFound))
             case .notRenewable: return .unavailable(.expired)
-            case .notWritable: return .unavailable(.renewFailed("无法写入钥匙串", retryIn: 5 * 60))
+            case .notWritable: return .unavailable(.renewFailed(L10n.tNow("无法写入钥匙串", "Could not write the keychain"), retryIn: 5 * 60))
             case .signedOut: return .unavailable(.signedOut(c.refreshToken))
             case .network(let message): return .unavailable(.renewFailed(message, retryIn: 60))
-            case .server(let message): return .unavailable(.renewFailed("续期失败（\(message)）", retryIn: 5 * 60))
+            case .server(let message): return .unavailable(.renewFailed(L10n.tNow("续期失败（\(message)）", "Renewal failed (\(message))"), retryIn: 5 * 60))
             case .saveFailed(let renewed):
                 // 新令牌仍然有效，本次照常使用；但钥匙串里还是旧的，Claude Code 下次可能需要重新登录
                 log.fault("renewed login could not be saved to the keychain")
@@ -595,19 +626,17 @@ final class OfficialUsageService {
         case failed(String)
     }
 
-    nonisolated private static let session: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.httpCookieStorage = nil
-        config.urlCache = nil
-        return URLSession(configuration: config)
-    }()
+    /// 不设置单独的客户端名字。未指定代理时沿用系统代理，指定后用量和续期都从那里出去。
+    nonisolated private static func makeSession(proxy: OutboundProxy?) -> URLSession {
+        ProxiedSession.make(proxy: proxy)
+    }
 
     /// 同步发送请求（只在后台队列调用）
-    nonisolated private static func perform(_ request: URLRequest) -> (HTTPURLResponse?, Data?, Error?) {
+    nonisolated private static func perform(_ request: URLRequest, proxy: OutboundProxy?, blockIPv6: Bool) -> (HTTPURLResponse?, Data?, Error?) {
+        if blockIPv6 { return PinnedTransport.perform(request, proxy: proxy) }
         let semaphore = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var result: (HTTPURLResponse?, Data?, Error?) = (nil, nil, nil)
-        session.dataTask(with: request) { data, response, error in
+        makeSession(proxy: proxy).dataTask(with: request) { data, response, error in
             result = (response as? HTTPURLResponse, data, error)
             semaphore.signal()
         }.resume()
@@ -615,51 +644,116 @@ final class OfficialUsageService {
         return result
     }
 
-    nonisolated private static func send(_ request: URLRequest) -> CredentialRenewal.Response? {
-        var request = request
-        request.setValue("claude-usage-monitor", forHTTPHeaderField: "User-Agent")
-        let (response, data, _) = perform(request)
+    nonisolated private static func send(_ request: URLRequest, proxy: OutboundProxy?, blockIPv6: Bool) -> CredentialRenewal.Response? {
+        let (response, data, _) = perform(request, proxy: proxy, blockIPv6: blockIPv6)
         return response.map { CredentialRenewal.Response(status: $0.statusCode, body: data) }
     }
 
     /// 与 Claude Code 登录时相同的请求，获取服务端实时的套餐档位
-    nonisolated private static func profile(token: String) -> AccountProfile? {
+    nonisolated private static func profile(token: String, proxy: OutboundProxy?, blockIPv6: Bool) -> AccountProfile? {
         var request = URLRequest(url: profileEndpoint, timeoutInterval: 12)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("claude-usage-monitor", forHTTPHeaderField: "User-Agent")
-        let (response, data, _) = perform(request)
+        let (response, data, _) = perform(request, proxy: proxy, blockIPv6: blockIPv6)
         guard response?.statusCode == 200, let data else { return nil }
         return AccountProfile.decode(data)
     }
 
-    nonisolated private static func request(token: String) -> RequestResult {
+    nonisolated private static func request(token: String, proxy: OutboundProxy?, blockIPv6: Bool) -> RequestResult {
         var request = URLRequest(url: endpoint, timeoutInterval: 12)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("claude-usage-monitor", forHTTPHeaderField: "User-Agent")
 
-        let (response, data, error) = perform(request)
+        let (response, data, error) = perform(request, proxy: proxy, blockIPv6: blockIPv6)
         if let error {
-            return .failed((error as NSError).code == NSURLErrorNotConnectedToInternet ? "网络未连接" : "网络错误")
+            return .failed((error as NSError).code == NSURLErrorNotConnectedToInternet ? L10n.tNow("网络未连接", "Offline") : L10n.tNow("网络错误", "Network error"))
         }
-        guard let response else { return .failed("无响应") }
+        guard let response else { return .failed(L10n.tNow("无响应", "No response")) }
         switch response.statusCode {
         case 200:
             // 调试：CUM_DEBUG_OFFICIAL=1 时输出原始响应（只含用量数据，不含凭据）
             if ProcessInfo.processInfo.environment["CUM_DEBUG_OFFICIAL"] == "1", let data {
                 print("[official] raw=\(String(decoding: data, as: UTF8.self))")
             }
-            guard let data, let usage = try? OfficialUsage.decode(data) else { return .failed("响应格式已变化") }
+            guard let data, let usage = try? OfficialUsage.decode(data) else { return .failed(L10n.tNow("响应格式已变化", "Unexpected response")) }
             return .success(usage)
         case 401, 403:
             return .unauthorized
         case 429:
             return .rateLimited(Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 120)
         default:
-            return .failed("服务返回 \(response.statusCode)")
+            return .failed(L10n.tNow("服务返回 \(response.statusCode)", "Server returned \(response.statusCode)"))
         }
+    }
+
+    // MARK: 上次的官方数字（不含登录）
+
+    private static var cacheURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("ClaudeUsageMonitor/official-usage.json")
+    }
+
+    private struct UsageCache: Codable {
+        struct Item: Codable {
+            var utilization: Double
+            var resetsAt: Date?
+        }
+        struct Scoped: Codable {
+            var modelName: String
+            var utilization: Double
+            var resetsAt: Date?
+        }
+        var fetchedAt: Date
+        var fiveHour: Item?
+        var sevenDay: Item?
+        var sevenDaySonnet: Item?
+        var sevenDayOpus: Item?
+        var scoped: [Scoped]
+    }
+
+    private func loadCachedUsage() {
+        guard let data = try? Data(contentsOf: Self.cacheURL) else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        guard let cache = try? decoder.decode(UsageCache.self, from: data) else { return }
+        func limit(_ item: UsageCache.Item?) -> OfficialLimit? {
+            item.map { OfficialLimit(utilization: $0.utilization, resetsAt: $0.resetsAt) }
+        }
+        usage = OfficialUsage(
+            fiveHour: limit(cache.fiveHour),
+            sevenDay: limit(cache.sevenDay),
+            sevenDaySonnet: limit(cache.sevenDaySonnet),
+            sevenDayOpus: limit(cache.sevenDayOpus),
+            scoped: cache.scoped.map {
+                ScopedLimit(modelName: $0.modelName, limit: OfficialLimit(utilization: $0.utilization, resetsAt: $0.resetsAt))
+            },
+            fetchedAt: cache.fetchedAt
+        )
+        if state == .connecting || state == .disabled { state = .connected }
+    }
+
+    private func saveCachedUsage(_ usage: OfficialUsage) {
+        func item(_ limit: OfficialLimit?) -> UsageCache.Item? {
+            limit.map { UsageCache.Item(utilization: $0.utilization, resetsAt: $0.resetsAt) }
+        }
+        let cache = UsageCache(
+            fetchedAt: usage.fetchedAt,
+            fiveHour: item(usage.fiveHour),
+            sevenDay: item(usage.sevenDay),
+            sevenDaySonnet: item(usage.sevenDaySonnet),
+            sevenDayOpus: item(usage.sevenDayOpus),
+            scoped: usage.scoped.map {
+                UsageCache.Scoped(modelName: $0.modelName, utilization: $0.limit.utilization, resetsAt: $0.limit.resetsAt)
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        guard let data = try? encoder.encode(cache) else { return }
+        let url = Self.cacheURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
     }
 }

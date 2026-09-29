@@ -1,12 +1,11 @@
 import AppKit
 import SwiftUI
+import UsageCore
 
 /// 菜单栏图标绘制（CoreGraphics 实时绘制矢量）。
-/// 低于预警阈值时为模板图像（自动适配浅色 / 深色菜单栏），超过阈值时变为警示色。
+/// 有官方用量时按占用上色；没有时用模板色，跟随菜单栏的深浅。
 @MainActor
 enum StatusIconRenderer {
-    enum Level { case normal, warning, critical }
-
     struct Input: Equatable {
         var icon: MenuBarIcon
         var style: MenuBarStyle
@@ -15,50 +14,117 @@ enum StatusIconRenderer {
         var primary: Double
         /// 下方条：每周占比
         var secondary: Double
-        var level: Level
+        /// 图标和数值的颜色。没有官方用量时为 nil。
+        var fraction: Double?
         var pose: MascotPose = .idle
+        /// 数值右侧的出口盾牌
+        var showsSafety: Bool = false
+        var exitSafe: Bool = false
+        /// IPv6 直连。比普通不安全更重，盾牌用实心警示。
+        var ipv6Direct: Bool = false
+        /// 菜单栏是深色时，无用量的图标用白色
+        var onDarkMenuBar: Bool = true
     }
 
     static func image(_ input: Input) -> NSImage {
         let height: CGFloat = 18
-        let color: NSColor = switch input.level {
-        case .normal: .black
-        case .warning: NSColor(red: 0.89, green: 0.64, blue: 0.29, alpha: 1)
-        case .critical: NSColor(red: 0.9, green: 0.35, blue: 0.31, alpha: 1)
-        }
+        let glyph = glyphColor(input)
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: glyph]
         let showsText = input.style == .iconPercent || input.style == .ringPercent
         let text = showsText ? (input.text ?? "–") : nil
         let textSize = text.map { ($0 as NSString).size(withAttributes: attributes) } ?? .zero
 
         let iconWidth: CGFloat = 16
+        let shield: CGFloat = 13
         var width = iconWidth
         if text != nil { width += 4 + ceil(textSize.width) }
         if input.style == .dualBars { width += 5 + 18 }
+        if input.showsSafety { width += 4 + shield }
 
         let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            ctx.setFillColor(color.cgColor)
 
             if input.style == .ringPercent {
-                drawRing(ctx, in: CGRect(x: 0, y: 1, width: 16, height: 16), fraction: input.primary, color: color)
+                drawRing(ctx, in: CGRect(x: 0, y: 1, width: 16, height: 16), fraction: input.primary, color: markColor(input.primary, input: input, fallback: glyph))
             } else {
-                drawIcon(ctx, input.icon, pose: input.pose, color: color)
+                drawIcon(ctx, input.icon, pose: input.pose, color: glyph)
             }
 
+            var cursor = iconWidth
             if let text {
-                (text as NSString).draw(at: CGPoint(x: iconWidth + 4, y: (height - textSize.height) / 2), withAttributes: attributes)
+                cursor += 4
+                (text as NSString).draw(at: CGPoint(x: cursor, y: (height - textSize.height) / 2), withAttributes: attributes)
+                cursor += ceil(textSize.width)
             }
             if input.style == .dualBars {
                 let x = iconWidth + 5
-                drawBar(ctx, CGRect(x: x, y: 5, width: 18, height: 3), fraction: input.primary, color: color)
-                drawBar(ctx, CGRect(x: x, y: 10, width: 18, height: 3), fraction: input.secondary, color: color)
+                drawBar(ctx, CGRect(x: x, y: 5, width: 18, height: 3), fraction: input.primary, color: markColor(input.primary, input: input, fallback: glyph))
+                drawBar(ctx, CGRect(x: x, y: 10, width: 18, height: 3), fraction: input.secondary, color: markColor(input.secondary, input: input, fallback: glyph))
+                cursor = x + 18
+            }
+            if input.showsSafety {
+                drawShield(ctx, in: CGRect(x: cursor + 4, y: (height - shield) / 2, width: shield, height: shield), safe: input.exitSafe, severe: input.ipv6Direct)
             }
             return true
         }
-        image.isTemplate = input.level == .normal
+        image.isTemplate = input.fraction == nil && !input.showsSafety
         return image
+    }
+
+    private static func glyphColor(_ input: Input) -> NSColor {
+        guard let fraction = input.fraction else {
+            return input.onDarkMenuBar ? .white : .black
+        }
+        let rgb = UsageTone.tone(for: fraction).components
+        return NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+    }
+
+    /// 和面板图标同一套语言：圆角细线、浅填充。安全是勾，不安全是叹号。直连时填充加重。
+    private static func drawShield(_ ctx: CGContext, in rect: CGRect, safe: Bool, severe: Bool) {
+        let rgb = (safe && !severe ? UsageTone.calm : UsageTone.critical).components
+        let color = NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY + 0.7))
+        path.addLine(to: CGPoint(x: rect.maxX - 0.9, y: rect.minY + 2.6))
+        path.addLine(to: CGPoint(x: rect.maxX - 0.9, y: rect.minY + rect.height * 0.52))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.midX, y: rect.maxY - 0.55),
+            control: CGPoint(x: rect.maxX - 1.1, y: rect.maxY - 1.5)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + 0.9, y: rect.minY + rect.height * 0.52),
+            control: CGPoint(x: rect.minX + 1.1, y: rect.maxY - 1.5)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + 0.9, y: rect.minY + 2.6))
+        path.closeSubpath()
+
+        ctx.setLineWidth(severe ? 1.45 : 1.15)
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        ctx.addPath(path)
+        ctx.setFillColor(color.withAlphaComponent(severe ? 0.72 : 0.22).cgColor)
+        ctx.fillPath()
+        ctx.addPath(path)
+        ctx.setStrokeColor(color.cgColor)
+        ctx.strokePath()
+
+        if severe {
+            ctx.setStrokeColor(NSColor.white.cgColor)
+            ctx.setFillColor(NSColor.white.cgColor)
+        }
+        if safe && !severe {
+            ctx.move(to: CGPoint(x: rect.midX - 2.35, y: rect.midY - 0.15))
+            ctx.addLine(to: CGPoint(x: rect.midX - 0.7, y: rect.midY + 1.55))
+            ctx.addLine(to: CGPoint(x: rect.midX + 2.45, y: rect.midY - 1.85))
+            ctx.strokePath()
+        } else {
+            ctx.move(to: CGPoint(x: rect.midX, y: rect.midY - 2.15))
+            ctx.addLine(to: CGPoint(x: rect.midX, y: rect.midY + 0.35))
+            ctx.strokePath()
+            if !severe { ctx.setFillColor(color.cgColor) }
+            ctx.fillEllipse(in: CGRect(x: rect.midX - 0.7, y: rect.midY + 1.35, width: 1.4, height: 1.4))
+        }
     }
 
     private static func drawIcon(_ ctx: CGContext, _ icon: MenuBarIcon, pose: MascotPose, color: NSColor) {
@@ -74,6 +140,12 @@ enum StatusIconRenderer {
             ctx.addPath(path.cgPath)
         }
         ctx.fillPath()
+    }
+
+    private static func markColor(_ fraction: Double, input: Input, fallback: NSColor) -> NSColor {
+        guard input.fraction != nil else { return fallback }
+        let rgb = UsageTone.tone(for: fraction).components
+        return NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
     }
 
     private static func drawRing(_ ctx: CGContext, in rect: CGRect, fraction: Double, color: NSColor) {

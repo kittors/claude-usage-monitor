@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-29
+
+### Added
+
+- The interface follows the system language. Simplified Chinese is used when the system language is Chinese. Otherwise it is English. Settings can pin either language.
+- Amounts can be shown in USD, CNY, JPY, GBP, EUR, HKD, SGD, AUD, CAD, CHF, or KRW. Rates are fetched from Frankfurter about once an hour and apply to the panel, the menu bar, and Settings.
+- The app can install a newer GitHub release after checking the zip against its SHA-256 file.
+- Settings can set a proxy for official usage and login renewal. Leave it empty to use the system proxy.
+- The panel shows the Claude exit: the address `api.anthropic.com` sees, with the country. The address is shortened until the pointer is over it.
+- A shield beside the menu bar value shows whether that exit is outside mainland China, Hong Kong, and Macau. It is on by default. Settings > Display can turn it off.
+- Usage color follows how full the limit is: green, yellow-green, amber, orange, then red.
+
+### Changed
+
+- Official usage is requested while Claude Code is in use, at least a minute apart. Opening the panel, Refresh, and a known window reset also fetch, with that same spacing. While Claude Code is idle, the app does not call `api.anthropic.com`.
+- Before each official usage request, the app checks the Claude exit. If the check fails, or the exit is in mainland China, Hong Kong, or Macau, the request is not sent.
+- IPv6 stays available. The panel notes that it is still a risk, and has a button to keep this app's official requests on IPv4. If an IPv6 connection to Claude is direct from mainland China, Hong Kong, or Macau, the panel and the shield show a severe warning. That warning does not stop the usage request.
+- Automatic login renewal is off by default. This version turns it off once, even if it was on before. You can turn it back on. Renewal uses the same proxy as usage.
+- Requests to Anthropic no longer use a `claude-usage-monitor` user agent.
+
+### Removed
+
+- The manual exchange-rate field.
+
 ## [1.1.0] - 2026-09-29
 
 ### Added

@@ -138,7 +138,27 @@ final class UsageStore {
     func start() {
         official.onChange = { [weak self] in self?.officialChanged() }
         official.autoRenew = prefs.autoRenewLogin
-        if prefs.officialUsageEnabled { official.refresh(.manual) } else { official.setEnabled(false) }
+        official.outboundProxy = OutboundProxy.parse(prefs.officialProxy)
+        official.blockIPv6 = prefs.blockIPv6
+        NetworkPlace.shared.proxy = official.outboundProxy
+        NetworkPlace.shared.blockIPv6 = prefs.blockIPv6
+        NetworkPlace.shared.onUpdate = { [weak self] in
+            guard let self, !NetworkPlace.shared.blocksOfficialUsage, self.sessionActive() else { return }
+            self.official.claudeActive = true
+            self.official.refresh(.timer)
+        }
+        NetworkPlace.shared.refresh()
+        if prefs.officialUsageEnabled {
+            // 启动时不主动访问 Anthropic。只有 Claude Code 正在用，才同步一次。
+            if sessionActive() {
+                official.claudeActive = true
+                official.refresh(.timer)
+            }
+        } else {
+            official.setEnabled(false)
+        }
+        ExchangeRates.shared.refreshIfStale()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { AppUpdate.shared.checkIfStale() }
         observeOfficialSettings()
 
         engine.prepare(signature: prefs.sourceSignature) { hadCache in
@@ -166,7 +186,10 @@ final class UsageStore {
 
     /// 弹窗打开时调用：数据超过 1 分钟就同步一次（仍受频率限制保护）
     func panelOpened() {
+        NetworkPlace.shared.refreshIfStale()
         official.refresh(.panel)
+        ExchangeRates.shared.refreshIfStale()
+        AppUpdate.shared.checkIfStale()
     }
 
     /// 在终端中登录 Claude Code，登录完成后自动恢复官方用量
@@ -194,6 +217,7 @@ final class UsageStore {
                 self.isScanning = false
                 self.lastScan = stats
                 self.lastScanAt = Date()
+                if !initial, stats.filesParsed > 0 { self.noteSessionActivity() }
                 if stats.changed || self.snapshot == nil {
                     self.recompute(pulse: !initial && stats.changed)
                 } else {
@@ -266,11 +290,18 @@ final class UsageStore {
         withObservationTracking {
             _ = prefs.officialUsageEnabled
             _ = prefs.autoRenewLogin
+            _ = prefs.officialProxy
+            _ = prefs.blockIPv6
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 let renewTurnedOn = self.prefs.autoRenewLogin && !self.official.autoRenew
                 self.official.autoRenew = self.prefs.autoRenewLogin
+                self.official.outboundProxy = OutboundProxy.parse(self.prefs.officialProxy)
+                self.official.blockIPv6 = self.prefs.blockIPv6
+                NetworkPlace.shared.proxy = self.official.outboundProxy
+                NetworkPlace.shared.blockIPv6 = self.prefs.blockIPv6
+                NetworkPlace.shared.refresh()
                 if self.prefs.officialUsageEnabled == (self.official.state == .disabled) {
                     self.official.setEnabled(self.prefs.officialUsageEnabled)
                 } else if renewTurnedOn, self.official.state == .expired {
@@ -318,9 +349,24 @@ final class UsageStore {
     }
 
     private func filesChanged() {
+        noteSessionActivity()
         // 活跃会话会持续写文件：最多每 2.5 秒扫描一次，且不会被持续的事件无限推迟
         let since = Date().timeIntervalSince(lastScanAt)
         scheduleScan(after: max(0.3, 2.5 - since))
+    }
+
+    /// 会话日志刚写过，或 Claude Code 进程还在。安静超过 10 分钟后不再后台请求官方用量。
+    private var lastLogActivity = Date.distantPast
+
+    private func noteSessionActivity() {
+        lastLogActivity = Date()
+        official.claudeActive = true
+        official.refresh(.timer)
+    }
+
+    private func sessionActive() -> Bool {
+        if Date().timeIntervalSince(lastLogActivity) < 10 * 60 { return true }
+        return ClaudeProcess.isRunning()
     }
 
     private func startTimer() {
@@ -330,12 +376,27 @@ final class UsageStore {
                 guard let self else { return }
                 // 时间窗口会随时间滑动；同时作为 FSEvents 的兜底
                 if Date().timeIntervalSince(self.lastScanAt) > 55 { self.scan() } else { self.recompute() }
+                self.official.claudeActive = self.sessionActive()
                 self.official.refresh(.timer)
+                ExchangeRates.shared.refreshIfStale()
             }
         }
         timer.tolerance = 5
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    private enum ClaudeProcess {
+        static func isRunning() -> Bool {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            process.arguments = ["-x", "claude"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do { try process.run() } catch { return false }
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        }
     }
 
     private func observePreferences() {

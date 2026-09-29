@@ -262,6 +262,8 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(Fmt.grouped(5_245_583_915) == "5,245,583,915")
     #expect(MoneyFormat().string(1680.44) == "$1,680.44")
     #expect(MoneyFormat(unit: .cny, rate: 7).string(10) == "¥70.00")
+    #expect(MoneyFormat(unit: .jpy, rate: 150).string(10) == "JP¥1,500")
+    #expect(MoneyFormat(unit: .eur, rate: 0.9).string(10) == "€9.00")
 }
 
 // MARK: - 官方用量
@@ -305,6 +307,74 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     let scoped = OfficialUsage(scoped: [ScopedLimit(modelName: "Fable", limit: OfficialLimit(utilization: 0, resetsAt: date("2026-10-03 22:15")))])
     let scopedClock = try #require(scoped.weeklyResetClock(calendar: shanghai))
     #expect(scopedClock.hour == 22 && scopedClock.minute == 15)
+}
+
+@Test func comparesVersionsAndReadsGitHubRelease() throws {
+    let older = try #require(AppVersion("1.1.0"))
+    let newer = try #require(AppVersion("v1.2.0"))
+    #expect(older < newer)
+    #expect(!(AppVersion("1.2")! < AppVersion("1.2.0")!))
+    #expect(!(AppVersion("1.2.0")! < AppVersion("1.2")!))
+    #expect(AppVersion("nope") == nil)
+
+    let json = Data(#"""
+    {"tag_name":"v1.2.0","assets":[
+      {"name":"ClaudeUsageMonitor-1.2.0-macOS.zip","browser_download_url":"https://example.com/app.zip"},
+      {"name":"ClaudeUsageMonitor-1.2.0-macOS.zip.sha256","browser_download_url":"https://example.com/app.zip.sha256"}
+    ]}
+    """#.utf8)
+    let release = try AppRelease.decodeGitHub(json)
+    #expect(release.version == newer)
+    #expect(release.zipURL.absoluteString == "https://example.com/app.zip")
+    #expect(release.checksumURL?.absoluteString == "https://example.com/app.zip.sha256")
+}
+
+@Test func pausesUsageInMainlandHongKongAndMacau() throws {
+    for code in ["CN", "cn", "HK", "MO"] {
+        #expect(PublicNetwork.restrictsUsage(countryCode: code))
+    }
+    #expect(!PublicNetwork.restrictsUsage(countryCode: "US"))
+    #expect(!PublicNetwork.restrictsUsage(countryCode: "JP"))
+    let united = try PublicNetwork.decode(Data(#"{"ip":"8.8.8.8","country_code":"US","region":"California","city":"Mountain View"}"#.utf8))
+    #expect(united.isUnitedStates)
+    #expect(!united.restrictsUsage)
+    #expect(united.flag == "🇺🇸")
+    let macau = try PublicNetwork.decode(Data(#"{"success":true,"ip":"1.2.3.4","country_code":"MO","region":"","city":"Macau"}"#.utf8))
+    #expect(macau.restrictsUsage)
+    #expect(macau.city == "Macau")
+    #expect(macau.region == nil)
+    let trace = PublicNetwork.decodeTrace("fl=1\nh=api.anthropic.com\nip=168.143.189.31\nloc=US\ncolo=LAX\n")
+    #expect(trace?.ip == "168.143.189.31")
+    #expect(trace?.countryCode == "US")
+    #expect(trace?.region == "LAX")
+    #expect(trace?.restrictsUsage == false)
+    #expect(PublicNetwork.decodeTrace("ip=1.1.1.1\nloc=CN\n")?.restrictsUsage == true)
+    let v6 = PublicNetwork.decodeTrace("ip=240e:1:1::1\nloc=HK\n")
+    #expect(v6?.isIPv6 == true)
+    #expect(v6?.restrictsUsage == true)
+    #expect(UsageTone.tone(for: 0.1) == .calm)
+    #expect(UsageTone.tone(for: 0.4) == .steady)
+    #expect(UsageTone.tone(for: 0.6) == .warm)
+    #expect(UsageTone.tone(for: 0.8) == .high)
+    #expect(UsageTone.tone(for: 0.97) == .critical)
+}
+
+@Test func parsesOutboundProxy() {
+    #expect(OutboundProxy.parse("  ") == nil)
+    #expect(OutboundProxy.parse("127.0.0.1:7890") == OutboundProxy(host: "127.0.0.1", port: 7890, socks: false))
+    #expect(OutboundProxy.parse("http://127.0.0.1:7890/path") == OutboundProxy(host: "127.0.0.1", port: 7890, socks: false))
+    #expect(OutboundProxy.parse("socks5://127.0.0.1:7891") == OutboundProxy(host: "127.0.0.1", port: 7891, socks: true))
+    #expect(OutboundProxy.parse("not a proxy") == nil)
+    #expect(OutboundProxy.parse("127.0.0.1:99999") == nil)
+}
+
+@Test func decodesFrankfurterUSDRates() throws {
+    let json = Data(#"{"amount":1.0,"base":"USD","date":"2026-09-26","rates":{"CNY":7.12,"EUR":0.92,"JPY":149.2,"GBP":0.78}}"#.utf8)
+    let rates = try FXRates.perUSD(fromFrankfurter: json)
+    #expect(rates["USD"] == 1)
+    #expect(rates["CNY"] == 7.12)
+    #expect(rates["JPY"] == 149.2)
+    #expect(MoneyFormat(unit: .cny, rate: rates["CNY"]!).convert(2) == 14.24)
 }
 
 @Test func officialPercentRoundsDownLikeClaudeCode() {

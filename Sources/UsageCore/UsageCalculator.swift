@@ -272,12 +272,13 @@ public enum UsageCalculator {
     }
 
     /// 闭区间，精确到秒：开始时刻，以及下一周期开始前的最后一秒。
-    public static func periodRange(start: Date, end: Date, calendar cal: Calendar) -> String {
+    public static func periodRange(start: Date, end: Date, calendar cal: Calendar, locale: Locale = Locale(identifier: "zh_CN")) -> String {
         let f = DateFormatter()
         f.calendar = cal
         f.timeZone = cal.timeZone
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "M月d日 HH:mm:ss"
+        f.locale = locale
+        let chinese = locale.language.languageCode?.identifier == "zh"
+        f.dateFormat = chinese ? "M月d日 HH:mm:ss" : "MMM d, HH:mm:ss"
         return "\(f.string(from: start)) – \(f.string(from: end.addingTimeInterval(-1)))"
     }
 }

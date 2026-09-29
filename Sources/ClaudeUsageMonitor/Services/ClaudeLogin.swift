@@ -17,11 +17,11 @@ enum ClaudeLogin {
         #!/bin/zsh
         # 由 Claude Usage Monitor 生成：登录 Claude Code
         clear
-        echo "登录 Claude Code：请在打开的浏览器页面中完成授权。"
+        echo "\(L10n.tNow("登录 Claude Code：请在打开的浏览器页面中完成授权。", "Sign in to Claude Code in the browser window that opens."))"
         echo
         if \(claude) auth login; then
           echo
-          echo "登录完成，可以关闭这个窗口。Claude Usage Monitor 会自动恢复官方用量。"
+          echo "\(L10n.tNow("登录完成，可以关闭这个窗口。Claude Usage Monitor 会自动恢复官方用量。", "Signed in. You can close this window. Claude Usage Monitor will pick up official usage."))"
         fi
         """
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("claude-code-login.command")

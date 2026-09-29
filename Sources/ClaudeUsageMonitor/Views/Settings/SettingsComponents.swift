@@ -154,6 +154,22 @@ struct SwitchToggle: View {
     }
 }
 
+/// 代理地址
+struct ProxyField: View {
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        FieldChrome(focused: focused) {
+            TextField("", text: $text, prompt: Text("127.0.0.1:7890").foregroundStyle(Palette.quaternary))
+                .textFieldStyle(.plain)
+                .monospaced()
+                .focused($focused)
+                .frame(width: 168)
+        }
+    }
+}
+
 /// 数值输入
 struct NumberField: View {
     @Binding var value: Double

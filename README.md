@@ -25,16 +25,18 @@ xattr -dr com.apple.quarantine "/Applications/Claude Usage Monitor.app"
 | --- | --- |
 | Limits | 5-hour, weekly (all models), and per-model weekly percentages (for example Fable), with reset times, shown the same way as `/usage`. If the Claude Code login is missing or expired, the panel says so and can run `claude auth login` in Terminal. |
 | Spend | API-equivalent cost for the current weekly quota window. Tabs switch that view to the billing month or to today. The range is printed to the second and ends on the last second of the window. Also requests, token totals, input / output / cache write / cache read, cache hit rate and the amount caching saved, cost by model, and a 14-day trend. |
-| Menu bar | Clawd or the Claude logo, plus a percentage, a ring, or two bars. Past your warning line it turns amber. Near the cap it turns red. Clawd raises a hand when new data arrives. |
+| Menu bar | Clawd or the Claude logo, plus a percentage, a ring, or two bars. The color follows how full the limit is, from green through amber to red. A shield beside the value shows whether the Claude exit is outside mainland China, Hong Kong, and Macau. Clawd raises a hand when new data arrives. |
 | Alerts | A notification when 5-hour or weekly usage crosses your warning line, and another at 95%. |
 
 ## Where the numbers come from
 
 **Limits.** The app reads the Claude Code login from the keychain and calls `GET https://api.anthropic.com/api/oauth/usage`. Percentages are rounded down, as in `/usage`: 71.9% is shown as 71%.
 
-The endpoint allows roughly one request a minute and then returns HTTP 429. The app syncs every 5 minutes, again when you open the panel if the last sync is older than a minute, and again when a window reaches its reset time. After a 429 it backs off. A failed sync keeps the last official values and shows when they were fetched. With no successful sync yet, the panel shows the reason and leaves the percentages blank.
+The endpoint allows roughly one request a minute and then returns HTTP 429. The app asks for official usage while Claude Code is in use: the process is running, or a session log was just written. Requests are at least a minute apart. Opening the panel, Refresh, and a known window reset also fetch, with that same spacing. While Claude Code is idle, the app does not call the endpoint. After a 429 it backs off. A failed sync keeps the last official values and shows when they were fetched. With no successful sync yet, the panel shows the reason and leaves the percentages blank.
 
-**Login renewal.** A Claude Code access token lasts about 8 hours, and the Claude Code CLI is what refreshes it. The desktop app uses a different login, so this keychain item goes stale if you never run the CLI. **Settings > Usage > Renew login automatically** is on by default. About 5 minutes before expiry the app renews the token the same way Claude Code does:
+Before each request the app checks the exit that `api.anthropic.com` sees. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, the request is not sent. IPv6 stays available. The panel says it is still a risk, and has a button that keeps this app's official requests on IPv4. It shows a severe warning if an IPv6 connection to Claude comes directly from mainland China, Hong Kong, or Macau.
+
+**Login renewal.** A Claude Code access token lasts about 8 hours, and the Claude Code CLI is what refreshes it. The desktop app uses a different login, so this keychain item goes stale if you never run the CLI. **Settings > Usage > Renew login automatically** is off by default. About 5 minutes before expiry, when the switch is on, the app renews the token the same way Claude Code does:
 
 - It takes the same locks (`~/.claude/.oauth_refresh.lock`, `~/.claude.lock`, `~/.claude/.storage-write.lock`), so it does not refresh at the same time as Claude Code.
 - Refreshing invalidates the previous refresh token. The app checks that the keychain item can be written, writes it, then reads it back.

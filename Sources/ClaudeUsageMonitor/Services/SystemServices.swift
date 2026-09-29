@@ -33,7 +33,7 @@ final class Notifier {
         case .countdown(let d), .weekday(let d): resetDate = d
         case .elapsed, .idle, .none: return
         }
-        let name = row.id == "five" ? "5 小时限额" : "本周限额"
+        let name = row.id == "five" ? L10n.t("5 小时限额", "5-hour limit") : L10n.t("本周限额", "Weekly limit")
         for t in thresholds where row.fraction >= t {
             // 以重置时间标识窗口，每个窗口每个阈值只提醒一次
             let key = "\(row.id)-\(Int(resetDate.timeIntervalSince1970 / 60))-\(Int(t * 100))"
@@ -44,10 +44,10 @@ final class Notifier {
 
             let reset = Fmt.countdown(resetDate.timeIntervalSinceNow, showSeconds: false)
             post(
-                title: "\(name)已使用 \(row.percent)%",
+                title: L10n.t("\(name)已使用 \(row.percent)%", "\(name) at \(row.percent)%"),
                 body: t >= 0.95
-                    ? "即将触达上限，\(reset)后重置。"
-                    : "当前消耗偏快，\(reset)后重置。"
+                    ? L10n.t("即将触达上限，\(reset)后重置。", "Near the cap. Resets in \(reset).")
+                    : L10n.t("当前消耗偏快，\(reset)后重置。", "Usage is running ahead. Resets in \(reset).")
             )
             return
         }

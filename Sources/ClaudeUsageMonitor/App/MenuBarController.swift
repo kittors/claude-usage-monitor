@@ -67,11 +67,11 @@ final class MenuBarController: NSObject {
             item.image = icon.nsImage(size: 15)
             return item
         }
-        menu.addItem(item("打开用量面板", .gauge, "", #selector(menuOpen)))
-        menu.addItem(item("立即刷新", .refresh, "r", #selector(menuRefresh)))
+        menu.addItem(item(L10n.t("打开用量面板", "Open usage"), .gauge, "", #selector(menuOpen)))
+        menu.addItem(item(L10n.t("立即刷新", "Refresh"), .refresh, "r", #selector(menuRefresh)))
         menu.addItem(.separator())
-        menu.addItem(item("设置…", .sliders, ",", #selector(menuSettings)))
-        menu.addItem(item("退出 Claude Usage Monitor", .power, "q", #selector(menuQuit)))
+        menu.addItem(item(L10n.t("设置…", "Settings…"), .sliders, ",", #selector(menuSettings)))
+        menu.addItem(item(L10n.t("退出 Claude Usage Monitor", "Quit Claude Usage Monitor"), .power, "q", #selector(menuQuit)))
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
@@ -92,9 +92,15 @@ final class MenuBarController: NSObject {
             _ = prefs.menuBarIcon
             _ = prefs.menuBarStyle
             _ = prefs.menuBarMetric
+            _ = prefs.showExitSafety
+            _ = prefs.blockIPv6
             _ = prefs.warningThreshold
+            _ = NetworkPlace.shared.place
+            _ = NetworkPlace.shared.ipv6
+            _ = NetworkPlace.shared.failed
             _ = prefs.currency
-            _ = prefs.exchangeRate
+            _ = ExchangeRates.shared.fetchedAt
+            _ = Localization.shared.token
             _ = store.pulse
         } onChange: { [weak self] in
             DispatchQueue.main.async {
@@ -125,23 +131,54 @@ final class MenuBarController: NSObject {
         }
         let primary = (prefs.menuBarMetric == .weekly ? week : five)?.fraction ?? 0
         let worst = max(five?.fraction ?? 0, week?.fraction ?? 0)
-        let level: StatusIconRenderer.Level = worst >= 0.95 ? .critical : (worst >= prefs.warningThreshold ? .warning : .normal)
+        let fraction: Double? = (five == nil && week == nil) ? nil : {
+            switch prefs.menuBarMetric {
+            case .fiveHour: five?.fraction ?? worst
+            case .weekly: week?.fraction ?? worst
+            default: worst
+            }
+        }()
+        let network = NetworkPlace.shared
+        let known = network.place != nil || network.failed
         let input = StatusIconRenderer.Input(
             icon: prefs.menuBarIcon, style: prefs.menuBarStyle, text: text ?? "–",
-            primary: primary, secondary: week?.fraction ?? 0, level: level, pose: iconInput?.pose ?? .idle
+            primary: primary, secondary: week?.fraction ?? 0, fraction: fraction,
+            pose: iconInput?.pose ?? .idle,
+            showsSafety: prefs.showExitSafety && known,
+            exitSafe: network.exitIsSafe,
+            ipv6Direct: network.ipv6IsDirect && !prefs.blockIPv6,
+            onDarkMenuBar: menuBarIsDark
         )
         iconInput = input
         statusItem.button?.image = StatusIconRenderer.image(input)
         var tip: [String] = []
         if let five, let week {
-            tip.append("5 小时 \(five.percent)% · 本周 \(week.percent)%")
+            tip.append(L10n.t("5 小时 \(five.percent)% · 本周 \(week.percent)%", "5-hour \(five.percent)% · Week \(week.percent)%"))
         } else if let five {
-            tip.append("5 小时 \(five.percent)%")
+            tip.append(L10n.t("5 小时 \(five.percent)%", "5-hour \(five.percent)%"))
         } else if prefs.officialUsageEnabled {
-            tip.append("官方用量：\(LimitsSection.shortReason(store.official.state))")
+            tip.append(L10n.t("官方用量：\(LimitsSection.shortReason(store.official.state))", "Official usage: \(LimitsSection.shortReason(store.official.state))"))
         }
-        if let weekCost = snap?.week { tip.append("本周 \(money.string(weekCost.cost))") }
+        if let weekCost = snap?.week { tip.append(L10n.t("本周 \(money.string(weekCost.cost))", "This week \(money.string(weekCost.cost))")) }
+        if prefs.showExitSafety, known {
+            if network.ipv6IsDirect && !prefs.blockIPv6 {
+                tip.append(L10n.t("严重警告：IPv6 正在直连", "Severe warning: IPv6 is connecting directly"))
+            } else if network.exitIsSafe {
+                tip.append(L10n.t("出口安全", "Exit is safe"))
+            } else {
+                tip.append(L10n.t("出口不安全", "Exit is not safe"))
+            }
+            if prefs.blockIPv6 {
+                tip.append(L10n.t("已屏蔽 IPv6", "IPv6 blocked"))
+            } else {
+                tip.append(L10n.t("未屏蔽 IPv6，仍是风险点", "IPv6 is not blocked and is still a risk"))
+            }
+        }
         statusItem.button?.toolTip = tip.isEmpty ? "Claude Usage Monitor" : tip.joined(separator: " · ")
+    }
+
+    private var menuBarIsDark: Bool {
+        statusItem.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     /// 有新数据时 Clawd 举一下手
@@ -336,8 +373,8 @@ enum DataDirectoryPicker {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
-        panel.prompt = "使用此目录"
-        panel.message = "选择 Claude Code 的会话目录（通常是 ~/.claude/projects）"
+        panel.prompt = L10n.t("使用此目录", "Use this folder")
+        panel.message = L10n.t("选择 Claude Code 的会话目录（通常是 ~/.claude/projects）", "Choose the Claude Code session folder (usually ~/.claude/projects)")
         panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
         NSApp.activate()
         if panel.runModal() == .OK, let url = panel.url {

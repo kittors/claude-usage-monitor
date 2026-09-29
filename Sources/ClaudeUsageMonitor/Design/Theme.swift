@@ -36,11 +36,9 @@ enum Palette {
     static let input = Color.white.opacity(0.62)
     static let output = Color.white.opacity(0.32)
 
-    /// 进度填充色：正常用强调色，超过预警阈值变琥珀，接近上限变红
-    static func level(_ fraction: Double, warning threshold: Double = 0.8) -> Color {
-        if fraction >= 0.95 { return critical }
-        if fraction >= threshold { return warning }
-        return accent
+    /// 进度填充色随占用变化：绿、黄绿、琥珀、橙、红。
+    static func level(_ fraction: Double) -> Color {
+        Color(hex: UsageTone.tone(for: fraction).hex)
     }
 }
 

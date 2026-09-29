@@ -250,7 +250,10 @@ final class Preferences {
         billingAnchorSecond = d.object(forKey: "billingAnchorSecond") as? Int
         dataDirectory = d.string(forKey: "dataDirectory")
         currency = MoneyFormat.Unit(rawValue: d.string(forKey: "currency") ?? "") ?? .usd
-        appLanguage = AppLanguage(rawValue: d.string(forKey: "appLanguage") ?? "") ?? .system
+        let language = AppLanguage(rawValue: d.string(forKey: "appLanguage") ?? "") ?? .system
+        appLanguage = language
+        // 初始化时不会触发 didSet：启动时要自己套用保存的语言，否则重启后又回到系统语言
+        Localization.shared.apply(language)
         menuBarIcon = MenuBarIcon(rawValue: d.string(forKey: "menuBarIcon") ?? "") ?? .mascot
         menuBarStyle = MenuBarStyle(rawValue: d.string(forKey: "menuBarStyle") ?? "") ?? .iconPercent
         // 以前只能选一个数值：沿用那一个

@@ -30,11 +30,15 @@ public struct AppRelease: Sendable, Equatable {
     public var version: AppVersion
     public var zipURL: URL
     public var checksumURL: URL?
+    public var notes: String
+    public var pageURL: URL?
 
-    public init(version: AppVersion, zipURL: URL, checksumURL: URL?) {
+    public init(version: AppVersion, zipURL: URL, checksumURL: URL?, notes: String = "", pageURL: URL? = nil) {
         self.version = version
         self.zipURL = zipURL
         self.checksumURL = checksumURL
+        self.notes = notes
+        self.pageURL = pageURL
     }
 
     /// `GET /repos/{owner}/{repo}/releases/latest`
@@ -45,7 +49,21 @@ public struct AppRelease: Sendable, Equatable {
                 let browser_download_url: String
             }
             let tag_name: String
+            let body: String?
+            let html_url: String?
             let assets: [Asset]
+
+            enum CodingKeys: String, CodingKey {
+                case tag_name, body, html_url, assets
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                tag_name = try container.decode(String.self, forKey: .tag_name)
+                body = try container.decodeIfPresent(String.self, forKey: .body)
+                html_url = try container.decodeIfPresent(String.self, forKey: .html_url)
+                assets = try container.decode([Asset].self, forKey: .assets)
+            }
         }
         let raw = try JSONDecoder().decode(Raw.self, from: data)
         guard let version = AppVersion(raw.tag_name) else {
@@ -56,6 +74,7 @@ public struct AppRelease: Sendable, Equatable {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "zip"))
         }
         let checksum = raw.assets.first { $0.name == zip.name + ".sha256" }.flatMap { URL(string: $0.browser_download_url) }
-        return AppRelease(version: version, zipURL: zipURL, checksumURL: checksum)
+        let notes = raw.body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return AppRelease(version: version, zipURL: zipURL, checksumURL: checksum, notes: notes, pageURL: raw.html_url.flatMap(URL.init(string:)))
     }
 }

@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-29
+
+### Changed
+
+- The Claude exit address keeps a fixed width. Showing the full IP no longer shifts the row.
+- Settings > General > App update opens the notes for that version. A download shows a progress bar and a percentage, in Settings and in the menu bar panel.
+
 ## [1.2.0] - 2026-09-29
 
 ### Added

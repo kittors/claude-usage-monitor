@@ -129,16 +129,18 @@ private struct NetworkPlaceRow: View {
             }
             Spacer(minLength: 8)
             if let place = network.place {
-                Text(hoveringIP ? place.ip : Self.abbreviated(place.ip))
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(ipColor(place))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                    .onHover { hoveringIP = $0 }
-                    .animation(.quiet, value: hoveringIP)
+                ZStack(alignment: .trailing) {
+                    Text(place.ip).hidden()
+                    Text(Self.abbreviated(place.ip)).hidden()
+                    Text(hoveringIP ? place.ip : Self.abbreviated(place.ip))
+                        .foregroundStyle(ipColor(place))
+                }
+                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onHover { hoveringIP = $0 }
             }
         }
         .frame(height: 26)
@@ -217,20 +219,25 @@ private struct UpdateBanner: View {
         Button {
             if update.canInstall { update.install() }
         } label: {
-            HStack(spacing: 8) {
-                Text(update.statusText)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.text)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Spacer(minLength: 8)
-                if update.canInstall {
-                    Text(L10n.t("更新", "Update"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, 10)
-                        .frame(height: 22)
-                        .background(Capsule().fill(Palette.accent))
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text(update.statusText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.text)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 8)
+                    if update.canInstall {
+                        Text(L10n.t("更新", "Update"))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 10)
+                            .frame(height: 22)
+                            .background(Capsule().fill(Palette.accent))
+                    }
+                }
+                if case .downloading = update.phase {
+                    DownloadProgress(fraction: update.downloadFraction)
                 }
             }
             .padding(.horizontal, 10)

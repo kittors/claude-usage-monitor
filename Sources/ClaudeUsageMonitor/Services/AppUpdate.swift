@@ -22,10 +22,18 @@ final class AppUpdate {
     }
 
     private(set) var phase: Phase = .idle
+    /// 安装包下载进度，0 到 1。
+    private(set) var downloadFraction: Double = 0
+    private(set) var notesVisible = false
+    private(set) var notes = ""
+    private(set) var notesReady = false
+    private(set) var notesVersion: String?
+    private(set) var pageURL: URL?
 
     @ObservationIgnored private var release: AppRelease?
     @ObservationIgnored private var lastCheck = Date.distantPast
     @ObservationIgnored private var inFlight = false
+    @ObservationIgnored private var wantsNotes = false
 
     static let endpoint = URL(string: "https://api.github.com/repos/kittors/claude-usage-monitor/releases/latest")!
     private static let interval: TimeInterval = 12 * 60 * 60
@@ -49,7 +57,7 @@ final class AppUpdate {
         case .checking: L10n.t("正在检查…", "Checking…")
         case .upToDate: L10n.t("已是最新 \(Self.currentText)", "Up to date \(Self.currentText)")
         case .available(let version): L10n.t("发现新版本 \(version)", "Version \(version) is available")
-        case .downloading: L10n.t("正在下载…", "Downloading…")
+        case .downloading: L10n.t("正在下载 \(Fmt.percent(downloadFraction))", "Downloading \(Fmt.percent(downloadFraction))")
         case .installing: L10n.t("正在安装，即将重新打开", "Installing, reopening shortly")
         case .failed(let message): message
         }
@@ -79,6 +87,11 @@ final class AppUpdate {
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError.unavailable }
                 let found = try AppRelease.decodeGitHub(data)
                 release = found
+                notes = found.notes
+                notesReady = true
+                notesVersion = found.version.text
+                pageURL = found.pageURL
+                if wantsNotes { notesVisible = true }
                 if found.version > current {
                     phase = .available(found.version.text)
                     remind(found.version.text)
@@ -97,6 +110,24 @@ final class AppUpdate {
         }
     }
 
+    /// 展开这个版本的更新说明。还没拉到说明时先检查一次。
+    func toggleNotes() {
+        if notesVisible {
+            notesVisible = false
+            return
+        }
+        notesVisible = true
+        if !notesReady {
+            wantsNotes = true
+            check()
+        }
+    }
+
+    func openReleasePage() {
+        guard let pageURL else { return }
+        NSWorkspace.shared.open(pageURL)
+    }
+
     func install() {
         guard case .available = phase, let release, !inFlight else { return }
         guard Bundle.main.bundleURL.pathExtension == "app" else {
@@ -104,13 +135,17 @@ final class AppUpdate {
             return
         }
         inFlight = true
+        downloadFraction = 0
         phase = .downloading
         let zipURL = release.zipURL
         let checksumURL = release.checksumURL
         let target = Bundle.main.bundleURL
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                let zip = try await Self.download(zipURL)
+                let zip = try await Self.download(zipURL) { fraction in
+                    self.downloadFraction = fraction
+                }
                 if let checksumURL {
                     let sum = try await Self.download(checksumURL)
                     let expected = String(decoding: sum, as: UTF8.self).split(whereSeparator: \.isWhitespace).first.map(String.init)?.lowercased()
@@ -165,12 +200,15 @@ final class AppUpdate {
 
     private static var currentText: String { current?.text ?? L10n.t("开发版", "dev") }
 
-    private static func download(_ url: URL) async throws -> Data {
-        var request = URLRequest(url: url, timeoutInterval: 60)
-        request.setValue("ClaudeUsageMonitor", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty else { throw UpdateError.unavailable }
-        return data
+    private static func download(_ url: URL, onProgress: (@MainActor (Double) -> Void)? = nil) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            let box = DownloadBox(onProgress: onProgress, continuation: continuation)
+            let session = URLSession(configuration: .ephemeral, delegate: box, delegateQueue: nil)
+            var request = URLRequest(url: url, timeoutInterval: 120)
+            request.setValue("ClaudeUsageMonitor", forHTTPHeaderField: "User-Agent")
+            box.session = session
+            session.downloadTask(with: request).resume()
+        }
     }
 
     /// 等当前进程退出后替换应用并重新打开。安装包已用发布时的 SHA-256 核对过。
@@ -202,5 +240,51 @@ final class AppUpdate {
 
     private enum UpdateError: Error {
         case unavailable, checksum, unpack
+    }
+}
+
+private final class DownloadBox: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private let onProgress: (@MainActor (Double) -> Void)?
+    private let continuation: CheckedContinuation<Data, Error>
+    var session: URLSession?
+
+    init(onProgress: (@MainActor (Double) -> Void)?, continuation: CheckedContinuation<Data, Error>) {
+        self.onProgress = onProgress
+        self.continuation = continuation
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0, let onProgress else { return }
+        let fraction = min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        Task { @MainActor in onProgress(fraction) }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        do {
+            let data = try Data(contentsOf: location)
+            guard !data.isEmpty else {
+                finish(.failure(URLError(.badServerResponse)))
+                return
+            }
+            finish(.success(data))
+        } catch {
+            finish(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { finish(.failure(error)) }
+    }
+
+    private func finish(_ result: Result<Data, Error>) {
+        lock.lock()
+        let first = !finished
+        if first { finished = true }
+        lock.unlock()
+        guard first else { return }
+        session?.finishTasksAndInvalidate()
+        continuation.resume(with: result)
     }
 }

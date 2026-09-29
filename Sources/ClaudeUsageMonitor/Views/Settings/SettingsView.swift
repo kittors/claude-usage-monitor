@@ -402,13 +402,7 @@ private struct GeneralPage: View {
             }
 
             SettingsHeader(title: L10n.t("更新", "Updates"))
-            SettingsRow(title: L10n.t("软件更新", "App update"), detail: AppUpdate.shared.statusText) {
-                if AppUpdate.shared.canInstall {
-                    QuietButton(title: L10n.t("更新", "Update"), prominent: true) { AppUpdate.shared.install() }
-                } else {
-                    QuietButton(title: L10n.t("检查", "Check")) { AppUpdate.shared.check() }
-                }
-            }
+            UpdateSettingsRow()
 
             SettingsHeader(title: L10n.t("启动", "Startup"))
             SettingsRow(title: L10n.t("登录时自动启动", "Launch at login"), detail: launchError ?? (LaunchAtLogin.needsApproval ? L10n.t("需要在「系统设置 › 通用 › 登录项」中允许", "Allow it in System Settings > General > Login Items") : nil)) {
@@ -458,5 +452,105 @@ private struct GeneralPage: View {
         f.locale = Localization.shared.locale
         f.dateFormat = Localization.shared.isChinese ? "yyyy年M月d日" : "MMM d, yyyy"
         return f.string(from: date)
+    }
+}
+
+private struct UpdateSettingsRow: View {
+    @State private var hovering = false
+
+    var body: some View {
+        let update = AppUpdate.shared
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n.t("软件更新", "App update"))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.text)
+                    Button {
+                        update.toggleNotes()
+                    } label: {
+                        Text(update.statusText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(hovering || update.notesVisible ? Palette.text : Palette.tertiary)
+                            .underline(hovering || update.notesVisible)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+                    .help(L10n.t("查看这个版本更新了什么", "See what changed in this version"))
+                }
+                Spacer(minLength: 12)
+                if update.canInstall {
+                    QuietButton(title: L10n.t("更新", "Update"), prominent: true) { update.install() }
+                } else if case .downloading = update.phase {
+                    EmptyView()
+                } else {
+                    QuietButton(title: L10n.t("检查", "Check")) { update.check() }
+                }
+            }
+            if case .downloading = update.phase {
+                DownloadProgress(fraction: update.downloadFraction)
+            }
+            if update.notesVisible {
+                ReleaseNotes(update: update)
+            }
+        }
+        .padding(.vertical, 11)
+    }
+}
+
+struct DownloadProgress: View {
+    var fraction: Double
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ThinBar(fraction: fraction, color: Palette.accent, delay: 0)
+            Text(Fmt.percent(fraction))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Palette.secondary)
+                .monospacedDigit()
+                .frame(width: 40, alignment: .trailing)
+        }
+    }
+}
+
+private struct ReleaseNotes: View {
+    let update: AppUpdate
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(update.notesVersion.map { L10n.t("版本 \($0)", "Version \($0)") } ?? L10n.t("更新说明", "Release notes"))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Palette.secondary)
+            ScrollView {
+                Text(notesBody)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 220)
+            if update.pageURL != nil {
+                Button {
+                    update.openReleasePage()
+                } label: {
+                    Text(L10n.t("在浏览器中打开", "Open in browser"))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(Palette.accent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.04)))
+    }
+
+    private var notesBody: AttributedString {
+        let raw = update.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = raw.isEmpty ? L10n.t("这个版本没有附带说明。", "This version has no notes.") : raw
+        if let parsed = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full)) {
+            return parsed
+        }
+        return AttributedString(text)
     }
 }

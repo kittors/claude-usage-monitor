@@ -179,7 +179,13 @@ final class UsageStore {
         NetworkPlace.shared.refreshIfStale()
         if prefs.refreshOnOpen {
             rescanNow()
-            isRefreshing = requestOfficial(.opened)
+            // 上次同步之后没有新的 Token 消耗，官方数字不会变，再查一次没有意义；等待登录时只读本地钥匙串，照常检查
+            if official.state.awaitingLogin || hasNewUsageSinceSync() {
+                isRefreshing = requestOfficial(.opened)
+            } else {
+                // 刚写进日志的消耗可能还没扫到：几秒内扫到新消耗就补查一次
+                openCheckUntil = Date().addingTimeInterval(5)
+            }
         }
         ExchangeRates.shared.refreshIfStale()
         AppUpdate.shared.checkIfStale()
@@ -433,6 +439,8 @@ final class UsageStore {
     @ObservationIgnored private var autoSyncTimer: Timer?
     @ObservationIgnored private var runningCheck: (at: Date, running: Bool)?
     @ObservationIgnored private var launchSyncPending = true
+    /// 展开面板时没有新消耗而没查：这个时间之前扫到新消耗就补查一次
+    @ObservationIgnored private var openCheckUntil = Date.distantPast
     @ObservationIgnored private var exitWasAllowed = false
 
     /// 每 2 秒按「设置 › 用量 › 自动查询」判断一次；没有新消耗时几乎不做事
@@ -460,6 +468,10 @@ final class UsageStore {
         }
         observedCost = cost
         if syncedCost == nil { syncedCost = cost }
+        if increased, Date() < openCheckUntil {
+            openCheckUntil = .distantPast
+            isRefreshing = requestOfficial(.opened)
+        }
         if launchSyncPending {
             launchSyncPending = false
             evaluateAutoSync(.resume)
@@ -468,13 +480,23 @@ final class UsageStore {
         }
     }
 
+    /// 上次官方同步之后，本机有没有新的 Token 消耗。
+    /// 同时看两样：这次运行里累计消耗是否增加；最新一条记录是否晚于官方数据的获取时间（重启后也能判断）
+    private func hasNewUsageSinceSync() -> Bool {
+        guard let fetched = official.usage?.fetchedAt else { return true }
+        if let cost = observedCost, let synced = syncedCost, cost > synced + 0.000_001 { return true }
+        if let last = snapshot?.lastRecord, last > fetched { return true }
+        return false
+    }
+
     /// 最近一次消耗：会话记录的时间与看到累计消耗增加的时间，取较晚的一个
     private func consumptionActivity() -> AutoSyncPolicy.Activity {
         let cost = observedCost ?? 0
         return AutoSyncPolicy.Activity(
             claudeCodeRunning: false,
             lastConsumption: [snapshot?.lastRecord, lastCostIncrease].compactMap { $0 }.max(),
-            unsyncedCost: max(0, cost - (syncedCost ?? cost))
+            unsyncedCost: max(0, cost - (syncedCost ?? cost)),
+            hasNewUsage: hasNewUsageSinceSync()
         )
     }
 

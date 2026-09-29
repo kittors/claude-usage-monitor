@@ -74,6 +74,8 @@ struct PillSegmented<Value: Hashable>: View {
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.05)))
+        // 选项文字不被挤压截断，空间不够时让左边的说明换行
+        .fixedSize()
     }
 }
 

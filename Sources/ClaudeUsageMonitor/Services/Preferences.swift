@@ -131,6 +131,15 @@ enum MenuBarItem: Hashable, Identifiable {
     }
 }
 
+/// 面板里重置时间的写法（按系统当前时区）
+enum ResetTimeStyle: String, CaseIterable, Identifiable, Codable {
+    /// 周六 22:00；今天、明天写作「今天」「明天」
+    case weekday
+    /// 2026年10月3日 22:00
+    case fullDate
+    var id: String { rawValue }
+}
+
 /// 本期消耗的统计范围。Claude 的额度按周重置，默认是本周。
 enum CostSpan: String, CaseIterable, Identifiable, Codable {
     case month, week, day
@@ -235,6 +244,10 @@ final class Preferences {
     var autoSyncMode: AutoSyncMode { didSet { save(autoSyncMode.rawValue, "autoSyncMode") } }
     /// 点开菜单栏图标时刷新一次。默认开启。
     var refreshOnOpen: Bool { didSet { save(refreshOnOpen, "refreshOnOpen") } }
+    /// 面板里重置时间的写法。默认「周六 22:00」。
+    var resetTimeStyle: ResetTimeStyle { didSet { save(resetTimeStyle.rawValue, "resetTimeStyle") } }
+    /// 重置时间旁显示倒计时，精确到秒、每秒刷新。默认关闭。
+    var showsResetCountdown: Bool { didSet { save(showsResetCountdown, "showsResetCountdown") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -278,6 +291,8 @@ final class Preferences {
         }
         autoSyncMode = AutoSyncMode(rawValue: d.string(forKey: "autoSyncMode") ?? "") ?? .consumption
         refreshOnOpen = d.object(forKey: "refreshOnOpen") as? Bool ?? true
+        resetTimeStyle = ResetTimeStyle(rawValue: d.string(forKey: "resetTimeStyle") ?? "") ?? .weekday
+        showsResetCountdown = d.object(forKey: "showsResetCountdown") as? Bool ?? false
     }
 
     private func save(_ value: Any?, _ key: String) {

@@ -138,7 +138,7 @@ private struct UsagePage: View {
                 SettingsRow(
                     title: L10n.t("展开面板时立即查询", "Check when the panel opens"),
                     detail: prefs.refreshOnOpen
-                        ? L10n.t("点开菜单栏图标时立即查询一次，只要求出口可用；10 秒内不重复查询。", "Checks right away when you open the menu bar panel. Only needs an allowed exit. Not repeated within 10 seconds.")
+                        ? L10n.t("点开菜单栏图标时，上次同步后有新的 Token 消耗就立即查询；没有新消耗时数字不会变，直接显示上次的结果，不发请求。", "When you open the menu bar panel, checks right away if tokens were used since the last sync. With no new usage the numbers cannot change, so it shows the last ones without a request.")
                         : L10n.t("已关闭：展开面板只显示上次的结果，按下方的自动查询频率更新，也可以点「立即刷新」。", "Off: opening the panel shows the last numbers. They update as set below, or with Refresh.")
                 ) {
                     SwitchToggle(isOn: $prefs.refreshOnOpen)
@@ -173,8 +173,8 @@ private struct UsagePage: View {
                 }
             }
             Text(L10n.t(
-                "官方用量会用当前登录访问 Anthropic，需要和 Claude Code 走同一网络。自动查询只在出口可用、且 Claude Code（终端或桌面版）正在使用时进行；手动刷新只要求出口可用。任意两次查询至少间隔 10 秒。关闭后仍可看本机费用。",
-                "Official usage sends your login to Anthropic and must use the same network as Claude Code. Automatic checks run only while the exit is allowed and Claude Code (Terminal or desktop) is in use. Refresh only needs an allowed exit. Checks are at least 10 seconds apart. Local cost stays available when this is off."
+                "官方用量会用当前登录访问 Anthropic，需要和 Claude Code 走同一网络。自动查询只在出口可用、Claude Code（终端或桌面版）正在使用，并且上次同步后 Token 有变化时进行；Token 没有变化时官方数字不会变，自动查询和展开面板都不会发请求。「立即刷新」只要求出口可用，点了就查。任意两次查询至少间隔 10 秒。关闭后仍可看本机费用。",
+                "Official usage sends your login to Anthropic and must use the same network as Claude Code. Automatic checks run only while the exit is allowed, Claude Code (Terminal or desktop) is in use, and tokens were used since the last sync. With no new tokens the numbers cannot change, so neither automatic checks nor opening the panel send a request. Refresh only needs an allowed exit and always checks. Checks are at least 10 seconds apart. Local cost stays available when this is off."
             ))
                 .font(.system(size: 11))
                 .foregroundStyle(Palette.tertiary)
@@ -227,19 +227,19 @@ private struct UsagePage: View {
         switch prefs.autoSyncMode {
         case .consumption:
             return L10n.t(
-                "按本机的 Token 消耗决定：消耗越快查得越勤，最快 10 秒一次，持续消耗时最长 2 分钟一次；消耗停下后再补查一次。",
-                "Follows local token use: the faster tokens go, the more often it checks, at most every 10 seconds and at least every 2 minutes while tokens are used. One more check after use stops."
+                "按本机的 Token 消耗决定：Token 没有变化就不查询；消耗越快查得越勤，最快 10 秒一次，持续消耗时最长 2 分钟一次，消耗停下后再补查一次。",
+                "Follows local token use. No new tokens, no check. The faster tokens go, the more often it checks, at most every 10 seconds and at least every 2 minutes while tokens are used, plus one more check after use stops."
             )
         case .every10Seconds:
             return L10n.t(
-                "Claude Code 正在使用时每 10 秒查询一次。间隔这么短容易被接口限流，被限流后要等 5 到 30 分钟。",
-                "Checks every 10 seconds while Claude Code is in use. This often hits the rate limit, and then checks pause for 5 to 30 minutes."
+                "Claude Code 正在使用时每 10 秒检查一次，Token 有变化才查询。间隔这么短容易被接口限流，被限流后要等 5 到 30 分钟。",
+                "Looks every 10 seconds while Claude Code is in use and checks only if tokens were used. This often hits the rate limit, and then checks pause for 5 to 30 minutes."
             )
         case let mode:
             let seconds = Int(mode.interval ?? 0)
             let zh = seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分钟"
             let en = seconds < 60 ? "\(seconds) seconds" : (seconds == 60 ? "minute" : "\(seconds / 60) minutes")
-            return L10n.t("Claude Code 正在使用时每 \(zh)查询一次。", "Checks every \(en) while Claude Code is in use.")
+            return L10n.t("Claude Code 正在使用时每 \(zh)检查一次，Token 有变化才查询。", "Looks every \(en) while Claude Code is in use and checks only if tokens were used.")
         }
     }
 
@@ -293,6 +293,13 @@ private struct UsagePage: View {
 private struct DisplayPage: View {
     @Bindable var prefs: Preferences
     let store: UsageStore
+
+    /// 时间格式选项里的示例：用实际的每周重置时间，还没有时用下一个周六 22:00
+    private var sampleReset: Date {
+        if let reset = store.official.usage?.weeklyReset() { return reset }
+        let cal = Calendar.autoupdatingCurrent
+        return cal.nextDate(after: Date(), matching: DateComponents(hour: 22, minute: 0, weekday: 7), matchingPolicy: .nextTime) ?? Date()
+    }
     /// 指针停在哪个数值方块上：上方的预览据此突出这一列，或预览加入它之后的样子
     @State private var hoveredItem: MenuBarItem?
 
@@ -315,6 +322,21 @@ private struct DisplayPage: View {
             Hairline()
             SettingsRow(title: L10n.t("出口安全", "Exit safety"), detail: L10n.t("在数值右侧显示盾牌。官方请求只走 IPv4。IPv6 直连中国大陆、香港或澳门时，菜单栏会警告。", "A shield beside the value. Official requests use IPv4 only. A direct IPv6 connection from mainland China, Hong Kong, or Macau warns in the menu bar.")) {
                 SwitchToggle(isOn: $prefs.showExitSafety)
+            }
+
+            SettingsHeader(title: L10n.t("重置时间", "Reset times"))
+            SettingsRow(
+                title: L10n.t("时间格式", "Format"),
+                detail: L10n.t("面板里各额度的重置时间，按系统当前时区（\(LimitsSection.zoneName)）", "When each limit resets, in the system time zone (\(LimitsSection.zoneName))")
+            ) {
+                PillSegmented(options: ResetTimeStyle.allCases.map { ($0, LimitsSection.resetMoment(sampleReset, style: $0)) }, selection: $prefs.resetTimeStyle)
+            }
+            Hairline()
+            SettingsRow(
+                title: L10n.t("显示倒计时", "Countdown"),
+                detail: L10n.t("在重置时间右侧显示还剩多久，精确到秒，每秒刷新", "Shows the time left beside each reset, to the second, updated every second")
+            ) {
+                SwitchToggle(isOn: $prefs.showsResetCountdown)
             }
 
             SettingsHeader(title: L10n.t("货币", "Currency"))

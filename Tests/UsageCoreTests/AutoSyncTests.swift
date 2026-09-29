@@ -6,11 +6,12 @@ import Testing
 
 private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
-private func activity(running: Bool = true, consumedAgo: TimeInterval? = 3, unsynced: Double = 0.1) -> AutoSyncPolicy.Activity {
+private func activity(running: Bool = true, consumedAgo: TimeInterval? = 3, unsynced: Double = 0.1, newUsage: Bool = true) -> AutoSyncPolicy.Activity {
     AutoSyncPolicy.Activity(
         claudeCodeRunning: running,
         lastConsumption: consumedAgo.map { now.addingTimeInterval(-$0) },
-        unsyncedCost: unsynced
+        unsyncedCost: unsynced,
+        hasNewUsage: newUsage
     )
 }
 
@@ -64,9 +65,22 @@ private func sync(
     #expect(sync(.every5Minutes, .tick, using, requestedAgo: 20, windowReset: true))
 }
 
+@Test func noNewTokensMeansNoCheck() {
+    // 上次同步之后 Token 没有变化：官方数字不会变，任何频率、任何时机都不查
+    let unchanged = activity(unsynced: 0, newUsage: false)
+    for mode in AutoSyncMode.allCases {
+        #expect(!sync(mode, .tick, unchanged, requestedAgo: 3600))
+        #expect(!sync(mode, .tick, unchanged, requestedAgo: 3600, windowReset: true))
+        #expect(!sync(mode, .resume, unchanged, requestedAgo: nil))
+    }
+    // 应用启动前就有的新消耗（这次运行里还没算进累计）也算有变化
+    #expect(sync(.consumption, .resume, activity(unsynced: 0, newUsage: true), requestedAgo: nil))
+    #expect(sync(.everyMinute, .tick, activity(unsynced: 0, newUsage: true), requestedAgo: 60))
+}
+
 @Test func consumptionModeFollowsTokenUse() {
     // 没有新消耗就不查
-    #expect(!sync(.consumption, .tick, activity(unsynced: 0), requestedAgo: 3600))
+    #expect(!sync(.consumption, .tick, activity(unsynced: 0, newUsage: false), requestedAgo: 3600))
     // 新消耗达到阈值：满 10 秒就查
     #expect(sync(.consumption, .tick, activity(consumedAgo: 1, unsynced: AutoSyncPolicy.costThreshold), requestedAgo: 12))
     // 消耗少、仍在继续：等到最长间隔

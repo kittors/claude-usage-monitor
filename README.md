@@ -45,7 +45,7 @@ plus what your Claude Code sessions would cost at API prices. Native, private, a
 <td valign="top">
 
 **Checks when it matters**<br>
-Only while Claude Code is in use, paced by how fast tokens go, and never within 10 seconds of the last check. Opening the panel refreshes right away.
+Only while Claude Code is in use, paced by how fast tokens go, and never within 10 seconds of the last check. Opening the panel refreshes right away when there is new usage.
 
 </td>
 <td valign="top">
@@ -118,12 +118,12 @@ The app reads the Claude Code login from the keychain and calls `GET https://api
 <summary><b>When it checks</b></summary>
 <br>
 
-The endpoint is rate-limited: at one request a minute it starts returning HTTP 429 after a dozen or so. Automatic checks run only while Claude Code is in use, meaning a session is running in Terminal or in the desktop app and it used tokens in the last 5 minutes. **Settings › Usage › Check automatically** sets how often:
+The endpoint is rate-limited: at one request a minute it starts returning HTTP 429 after a dozen or so. Automatic checks run only while Claude Code is in use, meaning a session is running in Terminal or in the desktop app and it used tokens in the last 5 minutes. They also need tokens used since the last sync: with no new tokens the numbers cannot change, so no request is sent at any interval. **Settings › Usage › Check automatically** sets how often:
 
 - **By token use** (default). Check once new usage since the last check reaches $0.50 at API prices, at least every 2 minutes while tokens keep going, and once more 15 seconds after they stop.
-- **A fixed interval** of 10 seconds, 30 seconds, 1 minute, 2 minutes, or 5 minutes. Shorter intervals hit the rate limit sooner.
+- **A fixed interval** of 10 seconds, 30 seconds, 1 minute, 2 minutes, or 5 minutes, checking only if tokens were used. Shorter intervals hit the rate limit sooner.
 
-While Claude Code is in use, the app also checks when a window resets, at launch, after wake, and when the exit becomes allowed again. Opening the panel checks right away (**Check when the panel opens**, on by default). Like **Refresh**, that only needs an allowed exit, and the refresh icon keeps turning until the new numbers arrive. Any two requests are at least 10 seconds apart. After a 429 it backs off for 5 to 30 minutes.
+While Claude Code is in use, the app also checks when a window resets, at launch, after wake, and when the exit becomes allowed again. Opening the panel checks right away when tokens were used since the last sync (**Check when the panel opens**, on by default). With no new usage the numbers cannot change, so no request is sent. Like **Refresh**, it only needs an allowed exit, and the refresh icon keeps turning until the new numbers arrive. Any two requests are at least 10 seconds apart. After a 429 it backs off for 5 to 30 minutes.
 
 </details>
 

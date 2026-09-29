@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-09-29
+
+### Added
+
+- **Settings > Display > Reset times** can show each reset as a full date, such as Oct 3, 2026 22:00, instead of Sat 22:00, in the system time zone. A countdown to the second can sit beside it and ticks every second. Hovering a reset shows the full date and the time zone.
+
+### Changed
+
+- Opening the panel checks official usage only when tokens were used since the last sync. With no new usage the numbers cannot change, so it shows the last ones without sending a request. Refresh still checks every time.
+- Automatic checks follow the same rule at every interval, including the checks at launch, after wake, and at a window reset. Settings > Usage explains this under each option.
+
+### Fixed
+
+- A pinned interface language now stays after the app restarts. Before, it fell back to the system language on the next launch.
+
 ## [1.2.3] - 2026-09-29
 
 ### Added

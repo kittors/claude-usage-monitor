@@ -27,7 +27,7 @@ struct LimitsSection: View {
                 }
             } else {
                 ForEach(rows) { row in
-                    LimitRowView(row: row)
+                    LimitRowView(row: row, style: prefs.resetTimeStyle, countdown: prefs.showsResetCountdown)
                 }
             }
             if rows.isEmpty || official.state.awaitingLogin {
@@ -104,6 +104,9 @@ struct LimitsSection: View {
 
 private struct LimitRowView: View {
     let row: LimitRow
+    /// 重置时间的写法，以及要不要在右侧显示精确到秒的倒计时
+    let style: ResetTimeStyle
+    let countdown: Bool
     /// 刚刚上涨了多少，几秒后淡出
     @State private var rise: Int?
     @State private var riseCount = 0
@@ -132,7 +135,15 @@ private struct LimitRowView: View {
             ThinBar(fraction: row.fraction, color: color)
             if row.reset != .none {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(resetText(now: context.date))
+                    let caption = resetCaption(now: context.date)
+                    HStack(spacing: 8) {
+                        Text(caption.text)
+                        Spacer(minLength: 8)
+                        if let remaining = caption.remaining {
+                            Text(remaining)
+                                .foregroundStyle(Palette.secondary)
+                        }
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(Palette.tertiary)
@@ -140,7 +151,7 @@ private struct LimitRowView: View {
             }
         }
         .contentShape(Rectangle())
-        .help(row.resetsAt.map { L10n.t("重置时间：\(LimitsSection.moment($0))", "Resets \(LimitsSection.moment($0))") } ?? "")
+        .help(row.resetsAt.map { L10n.t("重置时间：\(LimitsSection.fullDate($0))（\(LimitsSection.zoneName)）", "Resets \(LimitsSection.fullDate($0)) (\(LimitsSection.zoneName))") } ?? "")
         .onChange(of: row.percent) { old, new in
             guard new > old else { return }
             withAnimation(.easeOut(duration: 0.25)) { rise = new - old }
@@ -154,14 +165,27 @@ private struct LimitRowView: View {
         }
     }
 
-    private func resetText(now: Date) -> String {
+    /// 左边是什么时候重置，右边（打开倒计时时）是还剩多久，精确到秒
+    private func resetCaption(now: Date) -> (text: String, remaining: String?) {
+        let date: Date
         switch row.reset {
-        case .countdown(let date): date > now ? L10n.t("\(Fmt.countdown(date.timeIntervalSince(now)))后重置", "Resets in \(Fmt.countdown(date.timeIntervalSince(now)))") : L10n.t("已重置", "Reset")
-        case .weekday(let date): date > now ? L10n.t("\(LimitsSection.weekday(date)) 重置", "Resets \(LimitsSection.weekday(date))") : L10n.t("已重置", "Reset")
-        case .elapsed: L10n.t("已重置", "Reset")
-        case .idle: L10n.t("空闲中", "Idle")
-        case .none: ""
+        case .countdown(let reset):
+            guard reset > now else { return (L10n.t("已重置", "Reset"), nil) }
+            // 默认写法下，5 小时窗口本来就显示「还剩多久」
+            if style == .weekday && !countdown {
+                let left = Fmt.countdown(reset.timeIntervalSince(now))
+                return (L10n.t("\(left)后重置", "Resets in \(left)"), nil)
+            }
+            date = reset
+        case .weekday(let reset):
+            guard reset > now else { return (L10n.t("已重置", "Reset"), nil) }
+            date = reset
+        case .elapsed: return (L10n.t("已重置", "Reset"), nil)
+        case .idle: return (L10n.t("空闲中", "Idle"), nil)
+        case .none: return ("", nil)
         }
+        let moment = LimitsSection.resetMoment(date, style: style)
+        return (L10n.t("\(moment) 重置", "Resets \(moment)"), countdown ? LimitsSection.clock(date.timeIntervalSince(now)) : nil)
     }
 }
 
@@ -193,6 +217,55 @@ extension LimitsSection {
         f.locale = Localization.shared.locale
         f.dateFormat = "EEE HH:mm"
         return f.string(from: rounded)
+    }
+
+    /// 重置时刻，按系统当前时区。官方时间常带亚秒误差（例如 21:59:59.9），就近取整到分钟
+    static func resetMoment(_ date: Date, style: ResetTimeStyle) -> String {
+        switch style {
+        case .weekday: dayTime(date)
+        case .fullDate: fullDate(date)
+        }
+    }
+
+    /// 今天 22:00 / 明天 22:00 / 周六 22:00
+    static func dayTime(_ date: Date) -> String {
+        let rounded = roundedToMinute(date)
+        let cal = Calendar.autoupdatingCurrent
+        let time = formatter("HH:mm").string(from: rounded)
+        if cal.isDateInToday(rounded) { return L10n.t("今天 \(time)", "today \(time)") }
+        if cal.isDateInTomorrow(rounded) { return L10n.t("明天 \(time)", "tomorrow \(time)") }
+        return formatter("EEE HH:mm").string(from: rounded)
+    }
+
+    /// 2026年10月3日 22:00 / Oct 3, 2026 22:00
+    static func fullDate(_ date: Date) -> String {
+        formatter(Localization.shared.isChinese ? "yyyy年M月d日 HH:mm" : "MMM d, yyyy HH:mm").string(from: roundedToMinute(date))
+    }
+
+    /// 还剩多久，精确到秒：3 天 14:25:07 / 04:50:12
+    static func clock(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval.rounded(.down)))
+        let days = total / 86_400
+        let hms = String(format: "%02d:%02d:%02d", total % 86_400 / 3600, total % 3600 / 60, total % 60)
+        return days > 0 ? L10n.t("\(days) 天 \(hms)", "\(days)d \(hms)") : hms
+    }
+
+    /// 系统当前时区的简称，例如 GMT+8
+    static var zoneName: String {
+        let zone = TimeZone.autoupdatingCurrent
+        return zone.localizedName(for: .shortStandard, locale: Localization.shared.locale) ?? zone.identifier
+    }
+
+    private static func formatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Localization.shared.locale
+        f.timeZone = .autoupdatingCurrent
+        f.dateFormat = format
+        return f
+    }
+
+    private static func roundedToMinute(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: (date.timeIntervalSince1970 / 60).rounded() * 60)
     }
 
     /// 今天 05:32 / 昨天 05:32 / 周一 05:32

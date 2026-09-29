@@ -26,6 +26,7 @@ public enum AutoSyncMode: String, CaseIterable, Sendable {
 /// 自动查询的时机。只决定什么时候向官方查询，显示的数值仍然只来自官方接口。
 ///
 /// 自动查询要同时满足：Claude Code 正在使用（会话在运行，且最近有新的 Token 消耗）、
+/// 上次同步之后 Token 有变化（没有变化的话官方数字不会变，查了也没有意义）、
 /// 距上一次请求不少于 10 秒，再按所选频率判断。出口是否可用由调用方在发请求前确认。
 public enum AutoSyncPolicy {
     /// 任意两次官方请求的最短间隔（自动与手动都遵守）
@@ -46,11 +47,14 @@ public enum AutoSyncPolicy {
         public var lastConsumption: Date?
         /// 上次成功查询之后新增的消耗（美元，按 API 价格折算）
         public var unsyncedCost: Double
+        /// 上次成功查询之后有没有新的 Token 消耗（包括应用启动之前发生的）
+        public var hasNewUsage: Bool
 
-        public init(claudeCodeRunning: Bool, lastConsumption: Date?, unsyncedCost: Double) {
+        public init(claudeCodeRunning: Bool, lastConsumption: Date?, unsyncedCost: Double, hasNewUsage: Bool? = nil) {
             self.claudeCodeRunning = claudeCodeRunning
             self.lastConsumption = lastConsumption
             self.unsyncedCost = unsyncedCost
+            self.hasNewUsage = hasNewUsage ?? (unsyncedCost > 0)
         }
     }
 
@@ -79,7 +83,8 @@ public enum AutoSyncPolicy {
         mode: AutoSyncMode, occasion: Occasion, activity: Activity,
         lastRequest: Date?, windowReset: Bool, now: Date
     ) -> Bool {
-        guard isInUse(activity, now: now) else { return false }
+        // Token 没有变化，官方数字就不会变：任何频率下都不查询
+        guard isInUse(activity, now: now), activity.hasNewUsage else { return false }
         let sinceRequest = lastRequest.map { now.timeIntervalSince($0) } ?? .infinity
         guard sinceRequest >= minimumSpacing else { return false }
         switch occasion {
@@ -88,7 +93,6 @@ public enum AutoSyncPolicy {
         case .tick:
             if windowReset { return true }
             if let interval = mode.interval { return sinceRequest >= interval }
-            guard activity.unsyncedCost > 0 else { return false }
             if activity.unsyncedCost >= costThreshold || sinceRequest >= longestWait { return true }
             // 消耗停下来了：补查一次
             guard let last = activity.lastConsumption else { return false }

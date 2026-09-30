@@ -146,6 +146,7 @@ final class UsageStore {
         NetworkPlace.shared.proxy = official.outboundProxy
         NetworkPlace.shared.onUpdate = { [weak self] in self?.exitChecked() }
         NetworkPlace.shared.refresh()
+        NetworkPlace.shared.startWatching()
         // 启动时不主动访问 Anthropic：第一次算出本机用量后，Claude Code 正在使用才查一次
         if !prefs.officialUsageEnabled { official.setEnabled(false) }
         ExchangeRates.shared.refreshIfStale()
@@ -315,7 +316,7 @@ final class UsageStore {
                 self.official.autoRenew = self.prefs.autoRenewLogin
                 self.official.outboundProxy = OutboundProxy.parse(self.prefs.officialProxy)
                 NetworkPlace.shared.proxy = self.official.outboundProxy
-                NetworkPlace.shared.refresh()
+                NetworkPlace.shared.refresh(replacing: true)
                 if self.prefs.officialUsageEnabled == (self.official.state == .disabled) {
                     self.official.setEnabled(self.prefs.officialUsageEnabled)
                 } else if renewTurnedOn, self.official.state == .expired {

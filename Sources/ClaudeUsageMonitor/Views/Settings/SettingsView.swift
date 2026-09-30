@@ -539,24 +539,34 @@ private struct MenuBarPreview: View {
             return value
         }
         let limits = values.compactMap(\.fraction)
-        let input = StatusIconRenderer.Input(
-            icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
-            primary: limits.first ?? 0.42, secondary: 0.65, fraction: limits.max() ?? 0.42,
-            showsSafety: prefs.showExitSafety,
-            exitSafe: network.exitIsSafe,
-            ipv6Direct: network.ipv6IsDirect
-        )
-        HStack(spacing: 14) {
-            Spacer()
-            Capsule().fill(Color.white.opacity(0.18)).frame(width: 14, height: 4)
-            Image(nsImage: StatusIconRenderer.image(input))
-            Capsule().fill(Color.white.opacity(0.18)).frame(width: 22, height: 4)
-            Text("9:41").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.secondary)
+        let shield = network.menuShield
+        let loading = prefs.showExitSafety && shield == .loading
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !loading)) { context in
+            let phase = loading
+                ? CGFloat(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.13) / 1.13) * .pi * 2
+                : 0
+            let input = StatusIconRenderer.Input(
+                icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
+                primary: limits.first ?? 0.42, secondary: 0.65, fraction: limits.max() ?? 0.42,
+                showsSafety: (prefs.showExitSafety && shield != .none) || shield == .severe,
+                exitSafe: shield == .safe,
+                ipv6Direct: shield == .severe,
+                shieldLoading: loading,
+                shieldPhase: phase
+            )
+            HStack(spacing: 14) {
+                Spacer()
+                Capsule().fill(Color.white.opacity(0.18)).frame(width: 14, height: 4)
+                Image(nsImage: StatusIconRenderer.image(input))
+                Capsule().fill(Color.white.opacity(0.18)).frame(width: 22, height: 4)
+                Text("9:41").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.secondary)
+            }
         }
         .padding(.horizontal, 14)
         .frame(height: 30)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.05)))
-        .animation(.quiet, value: input)
+        .animation(.quiet, value: values.map { "\($0.label)\($0.text)\($0.emphasis)" })
+        .animation(.quiet, value: shield)
     }
 }
 

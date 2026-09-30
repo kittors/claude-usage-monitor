@@ -25,6 +25,8 @@ final class MenuBarController: NSObject {
     private var iconInput: StatusIconRenderer.Input?
     private var poseReset: DispatchWorkItem?
     private var lastPulse = 0
+    private var shieldTicker: Timer?
+    private var shieldPhase: CGFloat = 0
 
     var isOpen: Bool { presentation.isVisible }
 
@@ -95,9 +97,7 @@ final class MenuBarController: NSObject {
             _ = prefs.menuBarItems
             _ = prefs.showExitSafety
             _ = prefs.warningThreshold
-            _ = NetworkPlace.shared.place
-            _ = NetworkPlace.shared.ipv6
-            _ = NetworkPlace.shared.failed
+            _ = NetworkPlace.shared.menuShield
             _ = prefs.currency
             _ = ExchangeRates.shared.fetchedAt
             _ = Localization.shared.token
@@ -129,14 +129,17 @@ final class MenuBarController: NSObject {
         let fraction: Double? = shownLimits.max() ?? ((five == nil && week == nil) ? nil : worst)
         let primary = shownLimits.first ?? five?.fraction ?? 0
         let network = NetworkPlace.shared
-        let known = network.place != nil || network.failed
+        let shield = network.menuShield
+        let known = shield != .none
         let input = StatusIconRenderer.Input(
             icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
             primary: primary, secondary: week?.fraction ?? 0, fraction: fraction,
             pose: iconInput?.pose ?? .idle,
-            showsSafety: (prefs.showExitSafety && known) || network.ipv6IsDirect,
-            exitSafe: network.exitIsSafe,
-            ipv6Direct: network.ipv6IsDirect,
+            showsSafety: (prefs.showExitSafety && known) || shield == .severe,
+            exitSafe: shield == .safe,
+            ipv6Direct: shield == .severe,
+            shieldLoading: shield == .loading,
+            shieldPhase: shieldPhase,
             onDarkMenuBar: menuBarIsDark
         )
         iconInput = input
@@ -146,14 +149,39 @@ final class MenuBarController: NSObject {
         if rows.isEmpty, prefs.officialUsageEnabled {
             tip.append(L10n.t("官方用量：\(LimitsSection.shortReason(store.official.state))", "Official usage: \(LimitsSection.shortReason(store.official.state))"))
         }
-        if network.ipv6IsDirect {
+        if shield == .severe {
             tip.append(L10n.t("严重警告：IPv6 直连中国大陆、香港或澳门", "Severe warning: IPv6 connects directly from mainland China, Hong Kong, or Macau"))
-        } else if prefs.showExitSafety, known {
-            tip.append(network.exitIsSafe
+        } else if prefs.showExitSafety, shield == .loading {
+            tip.append(L10n.t("正在确认出口", "Checking exit"))
+        } else if prefs.showExitSafety, shield == .safe || shield == .risk {
+            tip.append(shield == .safe
                 ? L10n.t("出口安全", "Exit is safe")
                 : L10n.t("出口不安全", "Exit is not safe"))
         }
         statusItem.button?.toolTip = tip.isEmpty ? "Claude Usage Monitor" : tip.joined(separator: " · ")
+        updateShieldMotion(loading: shield == .loading && prefs.showExitSafety)
+    }
+
+    /// 只有安全出口重新确认时才转。大约 1.1 秒一圈，确认结束就停。
+    private func updateShieldMotion(loading: Bool) {
+        if loading {
+            guard shieldTicker == nil else { return }
+            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.shieldPhase += .pi * 2 / 34
+                    if self.shieldPhase > .pi * 2 { self.shieldPhase -= .pi * 2 }
+                    self.renderIcon()
+                }
+            }
+            timer.tolerance = 1.0 / 120
+            RunLoop.main.add(timer, forMode: .common)
+            shieldTicker = timer
+        } else if shieldTicker != nil {
+            shieldTicker?.invalidate()
+            shieldTicker = nil
+            shieldPhase = 0
+        }
     }
 
     private var menuBarIsDark: Bool {

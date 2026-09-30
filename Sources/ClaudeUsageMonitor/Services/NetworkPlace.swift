@@ -1,7 +1,13 @@
 import Foundation
 import Network
 import Observation
+import SystemConfiguration
 import UsageCore
+
+/// 菜单栏出口盾牌的四种样子。加载只出现在「安全出口正在重新确认」。
+enum MenuShield: Equatable {
+    case none, safe, risk, severe, loading
+}
 
 /// 查询当前出口的 IP 和地区。位置不明，或在中国大陆、香港、澳门时，不请求官方用量。
 @MainActor
@@ -20,6 +26,15 @@ final class NetworkPlace {
     @ObservationIgnored var blockIPv6 = true
     @ObservationIgnored var onUpdate: (() -> Void)?
     @ObservationIgnored private var inFlight = false
+    /// 确认过程中路径或代理又变了：这次结束后再确认一次。
+    @ObservationIgnored private var routeDirty = false
+    @ObservationIgnored private var routeDebounce: Task<Void, Never>?
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private var pathSignature: String?
+    @ObservationIgnored private var interfaceNames: Set<String>?
+    @ObservationIgnored private var proxyWatch: SystemProxyWatch?
+    /// 路径、代理连跳时并成一次确认。隧道握手往往连续回调好几次。
+    private static let routeQuiet: Duration = .milliseconds(500)
 
     /// 用量实际走的那条出口还没确认，或在中国大陆、香港、澳门。IPv6 直连只警告，不在这里拦截。
     var blocksOfficialUsage: Bool {
@@ -33,14 +48,42 @@ final class NetworkPlace {
     /// IPv6 没有走代理，出口落在中国大陆、香港或澳门。
     var ipv6IsDirect: Bool { ipv6?.restrictsUsage == true }
 
+    /// 菜单栏盾牌。安全出口正在重新确认时是加载；风险出口确认期间保持警示，不插入加载。
+    var menuShield: MenuShield {
+        if checkingSafeExit { return .loading }
+        if ipv6IsDirect { return .severe }
+        if let place {
+            return (failed || place.restrictsUsage) ? .risk : .safe
+        }
+        if failed { return .risk }
+        return heldShield ?? .none
+    }
+
+    /// 这次确认开始时，盾牌上是安全勾。
+    private(set) var checkingSafeExit = false
+    /// `replacing` 会先清掉地址。清掉之后菜单栏仍沿用确认前的盾牌，避免警示闪一下就没了。
+    private var heldShield: MenuShield?
+
     /// 上次确认超过 `maxAge` 才重新确认
     func refreshIfStale(maxAge: TimeInterval = 10 * 60) {
         if let checkedAt, !failed, Date().timeIntervalSince(checkedAt) < maxAge { return }
         refresh()
     }
 
-    func refresh() {
-        guard !inFlight else { return }
+    /// `replacing`：路线已经变了。先拿掉旧地址，确认失败也不再显示它。
+    func refresh(replacing: Bool = false) {
+        guard !inFlight else {
+            routeDirty = true
+            return
+        }
+        routeDebounce?.cancel()
+        routeDebounce = nil
+        routeDirty = false
+        rememberShield()
+        if replacing {
+            place = nil
+            ipv6 = nil
+        }
         inFlight = true
         failed = false
         let proxy = proxy
@@ -48,21 +91,121 @@ final class NetworkPlace {
         Task {
             let found = await ClaudeExit.look(proxy: proxy, blockIPv6: blockIPv6)
             inFlight = false
-            adopt(found)
+            if routeDirty {
+                scheduleRouteRefresh()
+            } else {
+                adopt(found, replacing: replacing)
+                endShieldCheck()
+            }
             onUpdate?()
         }
     }
 
-    /// 用同一次探测结果更新面板，不再额外触发官方用量。
-    func adopt(_ found: ExitSighting) {
-        ipv6 = found.ipv6
-        if let place = found.place {
-            self.place = place
-            checkedAt = Date()
-            failed = false
-        } else if place == nil {
-            failed = true
+    /// 监听网络路径、网卡和系统代理。只有变化时才重新确认，空闲时不发请求。
+    func startWatching() {
+        guard pathMonitor == nil else { return }
+        let queue = DispatchQueue(label: "io.github.kittors.ClaudeUsageMonitor.network", qos: .utility)
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { path in
+            let signature = Self.pathSignature(path)
+            Task { @MainActor in
+                NetworkPlace.shared.notePath(signature)
+            }
         }
+        monitor.start(queue: queue)
+        pathMonitor = monitor
+
+        let watch = SystemProxyWatch()
+        watch.onProxyChange = {
+            Task { @MainActor in
+                NetworkPlace.shared.scheduleRouteRefresh(fromProxy: true)
+            }
+        }
+        watch.onInterfaces = { names in
+            Task { @MainActor in
+                NetworkPlace.shared.noteInterfaces(names)
+            }
+        }
+        let names = watch.start(queue: queue)
+        proxyWatch = watch
+        if let names { noteInterfaces(names) }
+    }
+
+    /// 第一次回调是当前路径，不是变化。之后签名变了才确认。
+    private func notePath(_ signature: String) {
+        if pathSignature == nil {
+            pathSignature = signature
+            return
+        }
+        guard pathSignature != signature else { return }
+        pathSignature = signature
+        scheduleRouteRefresh()
+    }
+
+    /// 一次出口确认开始。官方用量发出前的那次确认也走这里。
+    func beginShieldCheck() { rememberShield() }
+
+    /// 确认结束。路线变化触发的下一次还没开始时才收起加载。
+    func endShieldCheck() {
+        guard !inFlight, !routeDirty, routeDebounce == nil else { return }
+        checkingSafeExit = false
+        heldShield = nil
+    }
+
+    /// 记下确认前的盾牌。只有当时是安全勾，确认期间才换成加载。
+    private func rememberShield() {
+        if checkingSafeExit || heldShield != nil { return }
+        if ipv6IsDirect {
+            heldShield = .severe
+        } else if exitIsSafe {
+            heldShield = .safe
+            checkingSafeExit = true
+        } else if place != nil || failed {
+            heldShield = .risk
+        }
+    }
+
+    /// 虚拟网卡不改默认路径，只出现或消失。名单没变（例如地址续租）不确认。
+    private func noteInterfaces(_ names: Set<String>) {
+        let previous = interfaceNames
+        interfaceNames = names
+        guard ExitSignals.interfacesChanged(from: previous, to: names) else { return }
+        scheduleRouteRefresh()
+    }
+
+    /// 应用里指定了官方代理时，系统代理不影响这条出口。
+    private func scheduleRouteRefresh(fromProxy: Bool = false) {
+        if fromProxy, proxy != nil { return }
+        routeDirty = true
+        routeDebounce?.cancel()
+        routeDebounce = Task { [weak self] in
+            try? await Task.sleep(for: Self.routeQuiet)
+            guard !Task.isCancelled, let self else { return }
+            self.routeDebounce = nil
+            self.refresh(replacing: true)
+        }
+    }
+
+    nonisolated private static func pathSignature(_ path: NWPath) -> String {
+        let faces = path.availableInterfaces
+            .map { "\($0.name):\($0.type)" }
+            .sorted()
+            .joined(separator: ",")
+        return "\(path.status)|\(path.unsatisfiedReason)|\(path.isExpensive)|\(path.isConstrained)|\(path.supportsIPv4)|\(path.supportsIPv6)|\(faces)"
+    }
+
+    /// 用同一次探测结果更新面板，不再额外触发官方用量。
+    func adopt(_ found: ExitSighting, replacing: Bool = false) {
+        let next = ExitSignals.apply(
+            current: .init(place: place, failed: failed),
+            found: found.place,
+            replacing: replacing
+        )
+        place = next.place
+        failed = next.failed
+        ipv6 = found.ipv6
+        if found.place != nil { checkedAt = Date() }
+        endShieldCheck()
     }
 
 }
@@ -181,6 +324,51 @@ enum ClaudeExit {
         }
         return PublicNetwork.decodeTrace(body)
     }
+}
+
+/// 系统代理，以及网卡出现或消失。Clash 的虚拟网卡不改默认路径，也不改系统代理。
+private final class SystemProxyWatch: @unchecked Sendable {
+    private var store: SCDynamicStore?
+    var onProxyChange: @Sendable () -> Void = {}
+    var onInterfaces: @Sendable (Set<String>) -> Void = { _ in }
+
+    func start(queue: DispatchQueue) -> Set<String>? {
+        guard store == nil else { return nil }
+        var context = SCDynamicStoreContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        guard let store = SCDynamicStoreCreate(nil, "io.github.kittors.ClaudeUsageMonitor.proxy" as CFString, { store, changed, info in
+            guard let info else { return }
+            let watch = Unmanaged<SystemProxyWatch>.fromOpaque(info).takeUnretainedValue()
+            let keys = changed as NSArray as? [String] ?? []
+            if keys.contains(where: { $0.contains("Proxies") }) { watch.onProxyChange() }
+            if keys.contains(where: { $0.contains("/Interface/") }) {
+                watch.onInterfaces(interfaceNames(in: store))
+            }
+        }, &context) else { return nil }
+        let patterns = [
+            "State:/Network/Interface/.*/IPv4",
+            "State:/Network/Interface/.*/IPv6",
+        ] as CFArray
+        guard SCDynamicStoreSetNotificationKeys(store, ["State:/Network/Global/Proxies"] as CFArray, patterns) else { return nil }
+        let names = interfaceNames(in: store)
+        guard SCDynamicStoreSetDispatchQueue(store, queue) else { return nil }
+        self.store = store
+        return names
+    }
+}
+
+private func interfaceNames(in store: SCDynamicStore) -> Set<String> {
+    let patterns = [
+        "State:/Network/Interface/.*/IPv4",
+        "State:/Network/Interface/.*/IPv6",
+    ]
+    let keys = patterns.flatMap { SCDynamicStoreCopyKeyList(store, $0 as CFString) as? [String] ?? [] }
+    return ExitSignals.interfaceNames(in: keys)
 }
 
 private final class Once: @unchecked Sendable {

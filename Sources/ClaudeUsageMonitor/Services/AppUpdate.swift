@@ -16,7 +16,7 @@ final class AppUpdate {
         case checking
         case upToDate
         case available(String)
-        case downloading
+        case downloading(String)
         case installing
         case failed(String)
     }
@@ -81,7 +81,8 @@ final class AppUpdate {
             isIgnored
                 ? L10n.t("已忽略新版本 \(version)，仍可随时更新", "Skipped version \(version). You can still update.")
                 : L10n.t("发现新版本 \(version)", "Version \(version) is available")
-        case .downloading: L10n.t("正在下载 \(Fmt.percent(downloadFraction))", "Downloading \(Fmt.percent(downloadFraction))")
+        // 百分比只在下方进度条旁显示，这里说明正在下载哪个版本
+        case .downloading(let version): L10n.t("正在下载 \(version)", "Downloading \(version)")
         case .installing: L10n.t("正在安装，即将重新打开", "Installing, reopening shortly")
         case .failed(let message): message
         }
@@ -159,14 +160,14 @@ final class AppUpdate {
     }
 
     func install() {
-        guard case .available = phase, let release, !inFlight else { return }
+        guard case .available(let version) = phase, let release, !inFlight else { return }
         guard Bundle.main.bundleURL.pathExtension == "app" else {
             phase = .failed(L10n.t("请先把应用放进「应用程序」再更新", "Move the app into Applications before updating"))
             return
         }
         inFlight = true
         downloadFraction = 0
-        phase = .downloading
+        phase = .downloading(version)
         let zipURL = release.zipURL
         let checksumURL = release.checksumURL
         let target = Bundle.main.bundleURL

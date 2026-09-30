@@ -33,6 +33,9 @@ enum StatusIconRenderer {
         var exitSafe: Bool = false
         /// IPv6 直连。比普通不安全更重，盾牌用实心警示。
         var ipv6Direct: Bool = false
+        /// 安全出口正在重新确认：盾牌轮廓不变，里面的勾换成同一套绿色的短弧。
+        var shieldLoading: Bool = false
+        var shieldPhase: CGFloat = 0
         /// 菜单栏是深色时，无用量的图标用白色
         var onDarkMenuBar: Bool = true
     }
@@ -95,7 +98,14 @@ enum StatusIconRenderer {
                 cursor = x + 18
             }
             if input.showsSafety {
-                drawShield(ctx, in: CGRect(x: cursor + 4, y: (height - shield) / 2, width: shield, height: shield), safe: input.exitSafe, severe: input.ipv6Direct)
+                drawShield(
+                    ctx,
+                    in: CGRect(x: cursor + 4, y: (height - shield) / 2, width: shield, height: shield),
+                    safe: input.exitSafe,
+                    severe: input.ipv6Direct,
+                    loading: input.shieldLoading,
+                    phase: input.shieldPhase
+                )
             }
             return true
         }
@@ -146,8 +156,9 @@ enum StatusIconRenderer {
     }
 
     /// 和面板图标同一套语言：圆角细线、浅填充。安全是勾，不安全是叹号。直连时填充加重。
-    private static func drawShield(_ ctx: CGContext, in rect: CGRect, safe: Bool, severe: Bool) {
-        let rgb = (safe && !severe ? UsageTone.calm : UsageTone.critical).components
+    /// 确认中用警示红，勾的位置换成一段圆头短弧，大小和位置都不变。
+    private static func drawShield(_ ctx: CGContext, in rect: CGRect, safe: Bool, severe: Bool, loading: Bool, phase: CGFloat) {
+        let rgb = (safe && !severe && !loading ? UsageTone.calm : UsageTone.critical).components
         let color = NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
         let path = CGMutablePath()
         path.move(to: CGPoint(x: rect.midX, y: rect.minY + 0.7))
@@ -174,6 +185,20 @@ enum StatusIconRenderer {
         ctx.setStrokeColor(color.cgColor)
         ctx.strokePath()
 
+        if loading {
+            let center = CGPoint(x: rect.midX, y: rect.midY + 0.35)
+            let radius: CGFloat = 2.35
+            ctx.setLineWidth(1.2)
+            ctx.setLineCap(.round)
+            ctx.setStrokeColor(color.withAlphaComponent(0.28).cgColor)
+            ctx.addArc(center: center, radius: radius, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+            ctx.strokePath()
+            ctx.setStrokeColor(color.cgColor)
+            let start = -CGFloat.pi / 2 + phase
+            ctx.addArc(center: center, radius: radius, startAngle: start, endAngle: start + .pi * 1.25, clockwise: false)
+            ctx.strokePath()
+            return
+        }
         if severe {
             ctx.setStrokeColor(NSColor.white.cgColor)
             ctx.setFillColor(NSColor.white.cgColor)

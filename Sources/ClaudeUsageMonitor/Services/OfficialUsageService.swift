@@ -326,6 +326,8 @@ final class OfficialUsageService {
         isFetching = true
         lastAttempt = now
         lastTrigger = trigger
+        // 登录轮询只看钥匙串。其余查询都会先确认出口：当时是安全勾才换成加载。
+        if trigger != .login { NetworkPlace.shared.beginShieldCheck() }
         let request = FetchRequest(
             cached: credentials,
             autoRenew: autoRenew,
@@ -415,6 +417,7 @@ final class OfficialUsageService {
     }
 
     private func apply(_ outcome: Outcome) {
+        NetworkPlace.shared.endShieldCheck()
         let now = Date()
         let previous = state
         switch outcome {

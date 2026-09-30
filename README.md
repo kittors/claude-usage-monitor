@@ -131,7 +131,7 @@ While Claude Code is in use, the app also checks when a window resets, at launch
 <summary><b>The exit check</b></summary>
 <br>
 
-Before each request the app asks `api.anthropic.com` which exit it sees, over the same connection the request will use. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, nothing is sent. Official requests use IPv4 only. If an IPv6 connection to Claude goes out directly from one of those regions, the panel and the menu bar show a severe warning.
+Before each request the app asks `api.anthropic.com` which exit it sees, over the same connection the request will use. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, nothing is sent. Official requests use IPv4 only. If an IPv6 connection to Claude goes out directly from one of those regions, the panel and the menu bar show a severe warning. The panel checks again when the route, a network interface, or the system proxy changes, and does not poll in between. While a safe exit is checked again, the menu bar shield turns red and a short arc spins inside it. A risky exit keeps its warning until the result arrives.
 
 </details>
 

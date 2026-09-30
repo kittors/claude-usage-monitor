@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-10-01
+
+### Changed
+
+- While an update downloads, **Settings > General > App update** shows the percentage only beside the progress bar. The line above names the version being downloaded instead of repeating the percentage.
+- The exit in the panel is checked again when the route, a network interface, or the system proxy changes. A virtual adapter that does not replace the default route is included. Nothing is polled while the network stays the same. If the new check cannot confirm an exit, the previous address is cleared.
+- While a safe exit is checked again, the menu bar shield turns red and a short arc spins inside it. A risky exit keeps the warning shield until the result arrives. Becoming safe does not show the spinner.
+
 ## [1.2.4] - 2026-09-29
 
 ### Added

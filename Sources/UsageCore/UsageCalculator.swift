@@ -10,15 +10,19 @@ public struct UsageSettings: Sendable, Equatable {
     public var billingAnchorSecond: Int
     /// 每周限额的某次重置时间。本周窗口按它每 7 天对齐；还没同步过时为 nil。
     public var weeklyReset: Date?
+    /// 进行中的 5 小时窗口的重置时间，窗口是它之前的 5 小时。没有进行中的窗口时为 nil。
+    public var fiveHourReset: Date?
     public var calendar: Calendar
 
     public init(billingAnchorDay: Int = 1, billingAnchorHour: Int = 0, billingAnchorMinute: Int = 0,
-                billingAnchorSecond: Int = 0, weeklyReset: Date? = nil, calendar: Calendar = .current) {
+                billingAnchorSecond: Int = 0, weeklyReset: Date? = nil, fiveHourReset: Date? = nil,
+                calendar: Calendar = .current) {
         self.billingAnchorDay = billingAnchorDay
         self.billingAnchorHour = billingAnchorHour
         self.billingAnchorMinute = billingAnchorMinute
         self.billingAnchorSecond = billingAnchorSecond
         self.weeklyReset = weeklyReset
+        self.fiveHourReset = fiveHourReset
         self.calendar = calendar
     }
 }
@@ -89,6 +93,8 @@ public struct UsageSnapshot: Sendable, Equatable {
     public var day: PeriodUsage
     /// 本周。还没有每周限额的重置时间时为 nil，不用自然周代替。
     public var week: PeriodUsage?
+    /// 进行中的 5 小时窗口里的本机消耗。没有进行中的窗口时为 nil。
+    public var fiveHourCost: Double?
     /// 最近 30 天（含今天），按日期升序
     public var daily: [DayUsage]
     public var totalRecords: Int
@@ -104,6 +110,9 @@ public struct UsageSnapshot: Sendable, Equatable {
 // MARK: - 计算
 
 public enum UsageCalculator {
+    /// 5 小时限额窗口的长度
+    public static let fiveHourWindow: TimeInterval = 5 * 3600
+
     public static func snapshot(of index: IndexSnapshot, settings: UsageSettings, now: Date = Date()) -> UsageSnapshot {
         let records = index.records
         let infos = index.models.map { PricingCatalog.info(for: $0) }
@@ -127,6 +136,11 @@ public enum UsageCalculator {
                     records: records, costs: costs, infos: infos,
                     interval: weeklyInterval(now: now, reset: reset), calendar: cal, now: now
                 )
+            },
+            fiveHourCost: settings.fiveHourReset.map { reset in
+                let from = lowerBound(records, reset.timeIntervalSince1970 - fiveHourWindow)
+                let to = lowerBound(records, reset.timeIntervalSince1970)
+                return costs[from..<max(from, to)].reduce(0, +)
             },
             daily: dailyUsage(records: records, costs: costs, calendar: cal, now: now, days: 30),
             totalRecords: records.count,

@@ -4,7 +4,7 @@ import Observation
 import SystemConfiguration
 import UsageCore
 
-/// 菜单栏出口盾牌的四种样子。加载只出现在「安全出口正在重新确认」。
+/// 菜单栏出口盾牌的四种样子。加载只出现在「网络变了，安全出口正在重新确认」；每次查询前的例行确认在后台进行，盾牌不动。
 enum MenuShield: Equatable {
     case none, safe, risk, severe, loading
 }
@@ -70,22 +70,25 @@ final class NetworkPlace {
         refresh()
     }
 
-    /// `replacing`：路线已经变了。先拿掉旧地址，确认失败也不再显示它。
+    /// `replacing`：路线已经变了。先拿掉旧地址，确认失败也不再显示它；安全出口在确认期间显示加载。
+    /// 其余确认（启动、过期重查）在后台进行，盾牌保持原样。
     func refresh(replacing: Bool = false) {
         guard !inFlight else {
-            routeDirty = true
+            // 正在确认时路线又变了：这次结束后再确认一次。普通的重查等这次的结果就行。
+            if replacing { routeDirty = true }
             return
         }
         routeDebounce?.cancel()
         routeDebounce = nil
         routeDirty = false
-        rememberShield()
         if replacing {
+            rememberShield()
             place = nil
             ipv6 = nil
+            failed = false
         }
+        // 后台重查时上次的结果（包括确认失败）一直有效，等这次结果出来再换
         inFlight = true
-        failed = false
         let proxy = proxy
         let blockIPv6 = blockIPv6
         Task {
@@ -141,9 +144,6 @@ final class NetworkPlace {
         pathSignature = signature
         scheduleRouteRefresh()
     }
-
-    /// 一次出口确认开始。官方用量发出前的那次确认也走这里。
-    func beginShieldCheck() { rememberShield() }
 
     /// 确认结束。路线变化触发的下一次还没开始时才收起加载。
     func endShieldCheck() {
@@ -292,6 +292,9 @@ enum ClaudeExit {
                         receive(connection, into: Data(), finish: finish)
                     })
                 case .failed, .cancelled:
+                    finish(nil)
+                case .waiting:
+                    // 没有 IPv6 路线时系统直接进入等待（例如 Network is down），不必等到超时
                     finish(nil)
                 default:
                     break

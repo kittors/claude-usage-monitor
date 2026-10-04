@@ -271,6 +271,10 @@ final class OfficialUsageService {
     @ObservationIgnored private var deadRefreshToken: String?
     @ObservationIgnored private var loginWatch: Timer?
     @ObservationIgnored private let queue = DispatchQueue(label: "claude-usage-monitor.official", qos: .utility)
+    /// 请求预算：自动查询平均每 5 分钟最多 1 次，跨重启保留，免得被官方限流
+    @ObservationIgnored private var budget = OfficialUsageService.loadBudget() {
+        didSet { Self.saveBudget(budget) }
+    }
 
     init() {
         loadCachedUsage()
@@ -306,28 +310,30 @@ final class OfficialUsageService {
         case .auto:
             // 出口在中国大陆、香港或澳门，或还没确认位置时，不自动访问官方用量
             guard !NetworkPlace.shared.blocksOfficialUsage, now >= rateLimitedUntil,
-                  state != .denied, now >= retryAfter, sinceAttempt >= Self.minimumSpacing else { return false }
+                  state != .denied, now >= retryAfter, sinceAttempt >= Self.minimumSpacing,
+                  budget.allows(manual: false, at: now) else { return false }
         case .manual:
             if now < rateLimitedUntil {
                 let minutes = max(1, Int((rateLimitedUntil.timeIntervalSince(now) / 60).rounded(.up)))
                 flash(L10n.tNow("请求过于频繁，约 \(minutes) 分钟后可再试", "Too many requests. Try again in about \(minutes) min"))
                 return false
             }
-            guard sinceAttempt >= Self.minimumSpacing else {
-                let seconds = max(1, Int((Self.minimumSpacing - sinceAttempt).rounded(.up)))
-                flash(L10n.tNow("刚刚查询过，\(seconds) 秒后可再试", "Just checked. Try again in \(seconds) s"))
+            let wait = max(Self.minimumSpacing - sinceAttempt, budget.wait(manual: true, at: now))
+            guard wait <= 0 else {
+                flash(L10n.tNow("刚刚查询过，\(Self.waitText(wait))后可再试", "Just checked. Try again in \(Self.waitText(wait))"))
                 return false
             }
         case .opened:
-            guard now >= rateLimitedUntil, sinceAttempt >= Self.minimumSpacing else { return false }
+            guard now >= rateLimitedUntil, sinceAttempt >= Self.minimumSpacing,
+                  budget.allows(manual: false, at: now) else { return false }
         case .login:
-            guard state.awaitingLogin, now >= rateLimitedUntil, sinceAttempt >= 2 else { return false }
+            guard state.awaitingLogin, now >= rateLimitedUntil, sinceAttempt >= 2,
+                  budget.allows(manual: true, at: now) else { return false }
         }
         isFetching = true
         lastAttempt = now
         lastTrigger = trigger
-        // 登录轮询只看钥匙串。其余查询都会先确认出口：当时是安全勾才换成加载。
-        if trigger != .login { NetworkPlace.shared.beginShieldCheck() }
+        // 发请求前会在后台再确认一次出口，盾牌不变：只有网络真的变了才显示加载
         let request = FetchRequest(
             cached: credentials,
             autoRenew: autoRenew,
@@ -344,6 +350,16 @@ final class OfficialUsageService {
             }
         }
         return true
+    }
+
+    /// 还要等多久：不到一分钟按秒，否则按分钟（向上取整）
+    private static func waitText(_ seconds: TimeInterval) -> String {
+        if seconds < 60 {
+            let s = max(1, Int(seconds.rounded(.up)))
+            return L10n.tNow("\(s) 秒", "\(s) s")
+        }
+        let minutes = Int((seconds / 60).rounded(.up))
+        return L10n.tNow("约 \(minutes) 分钟", "about \(minutes) min")
     }
 
     /// 在状态栏位置显示几秒的说明（手动刷新没有发出请求时）
@@ -371,15 +387,6 @@ final class OfficialUsageService {
         timer.tolerance = 0.5
         RunLoop.main.add(timer, forMode: .common)
         loginWatch = timer
-    }
-
-    /// 上次同步之后，是否有窗口已经到了重置时间
-    func windowHasReset(_ now: Date) -> Bool {
-        guard let usage else { return false }
-        return [usage.fiveHour?.resetsAt, usage.sevenDay?.resetsAt].contains { reset in
-            guard let reset else { return false }
-            return reset <= now && usage.fetchedAt < reset
-        }
     }
 
     // MARK: 结果
@@ -414,12 +421,20 @@ final class OfficialUsageService {
             default: false
             }
         }
+
+        /// 真的向用量接口发了请求，计入请求预算
+        var reachedUsageEndpoint: Bool {
+            switch self {
+            case .success, .unauthorized, .rateLimited, .failed: true
+            default: false
+            }
+        }
     }
 
     private func apply(_ outcome: Outcome) {
-        NetworkPlace.shared.endShieldCheck()
         let now = Date()
         let previous = state
+        if outcome.reachedUsageEndpoint { budget.spend(at: now) }
         switch outcome {
         case .success(let usage, let credentials, let profile, let renewed):
             // 数字滚动、进度条缓动到新值
@@ -466,7 +481,8 @@ final class OfficialUsageService {
             state = autoRenew ? .failed(L10n.tNow("授权失败", "Authorization failed")) : .expired
             retryAfter = now.addingTimeInterval(5 * 60)
         case .rateLimited(let retry):
-            // 5 分钟起，每次翻倍，最长 30 分钟
+            // 同一账号的其他客户端也在用这份额度：预算清零重新攒；冷却 5 分钟起，每次翻倍，最长 30 分钟
+            budget.drain(at: now)
             rateLimitStreak += 1
             let backoff = min(30 * 60, 5 * 60 * pow(2, Double(rateLimitStreak - 1)))
             rateLimitedUntil = now.addingTimeInterval(max(retry, backoff))
@@ -712,6 +728,21 @@ final class OfficialUsageService {
         default:
             return .failed(L10n.tNow("服务返回 \(response.statusCode)", "Server returned \(response.statusCode)"))
         }
+    }
+
+    // MARK: 请求预算
+
+    private static let budgetKey = "officialRequestBudget"
+
+    private static func loadBudget() -> RequestBudget {
+        guard let data = UserDefaults.standard.data(forKey: budgetKey),
+              let budget = try? JSONDecoder().decode(RequestBudget.self, from: data) else { return RequestBudget() }
+        return budget
+    }
+
+    private static func saveBudget(_ budget: RequestBudget) {
+        guard let data = try? JSONEncoder().encode(budget) else { return }
+        UserDefaults.standard.set(data, forKey: budgetKey)
     }
 
     // MARK: 上次的官方数字（不含登录）

@@ -138,14 +138,20 @@ private struct UsagePage: View {
                 SettingsRow(
                     title: L10n.t("展开面板时立即查询", "Check when the panel opens"),
                     detail: prefs.refreshOnOpen
-                        ? L10n.t("点开菜单栏图标时，上次同步后有新的 Token 消耗就立即查询；没有新消耗时数字不会变，直接显示上次的结果，不发请求。", "When you open the menu bar panel, checks right away if tokens were used since the last sync. With no new usage the numbers cannot change, so it shows the last ones without a request.")
-                        : L10n.t("已关闭：展开面板只显示上次的结果，按下方的自动查询频率更新，也可以点「立即刷新」。", "Off: opening the panel shows the last numbers. They update as set below, or with Refresh.")
+                        ? L10n.t("点开菜单栏图标时，上次同步后的消耗可能已经让数字变了，就立即查询；否则直接显示上次的结果，不发请求。", "When you open the menu bar panel, checks right away if usage since the last sync may have changed the numbers. Otherwise it shows the last ones without a request.")
+                        : L10n.t("已关闭：展开面板只显示上次的结果，之后自动更新，也可以点「立即刷新」。", "Off: opening the panel shows the last numbers. They update on their own, or with Refresh.")
                 ) {
                     SwitchToggle(isOn: $prefs.refreshOnOpen)
                 }
                 Hairline()
-                SettingsRow(title: L10n.t("自动查询", "Check automatically"), detail: autoSyncDetail) {
-                    DropdownButton(options: AutoSyncMode.allCases.map { ($0, $0.title) }, selection: $prefs.autoSyncMode)
+                SettingsRow(
+                    title: L10n.t("查询间隔", "Interval"),
+                    detail: L10n.t(
+                        "Claude Code 正在使用时，消耗的 Token 够让官方百分比涨一格才查，两次至少隔这么久。官方接口限额很紧，平均每 5 分钟最多查 1 次，免得被限流。",
+                        "While Claude Code is in use, it checks once tokens used are enough to move the official percentage by one point, and checks are at least this far apart. The official endpoint is tightly limited, so it averages at most one check every 5 minutes to avoid rate limits."
+                    )
+                ) {
+                    NumberField(value: $prefs.autoSyncInterval, suffix: L10n.t("秒", "s"), width: 40)
                 }
                 Hairline()
                 SettingsRow(title: L10n.t("官方请求代理", "Official request proxy"), detail: proxyDetail) {
@@ -173,8 +179,8 @@ private struct UsagePage: View {
                 }
             }
             Text(L10n.t(
-                "官方用量会用当前登录访问 Anthropic，需要和 Claude Code 走同一网络。自动查询只在出口可用、Claude Code（终端或桌面版）正在使用，并且上次同步后 Token 有变化时进行；Token 没有变化时官方数字不会变，自动查询和展开面板都不会发请求。「立即刷新」只要求出口可用，点了就查。任意两次查询至少间隔 10 秒。关闭后仍可看本机费用。",
-                "Official usage sends your login to Anthropic and must use the same network as Claude Code. Automatic checks run only while the exit is allowed, Claude Code (Terminal or desktop) is in use, and tokens were used since the last sync. With no new tokens the numbers cannot change, so neither automatic checks nor opening the panel send a request. Refresh only needs an allowed exit and always checks. Checks are at least 10 seconds apart. Local cost stays available when this is off."
+                "官方用量会用当前登录访问 Anthropic，需要和 Claude Code 走同一网络。自动查询只在出口可用、Claude Code（终端或桌面版）正在使用时进行；Token 没有变化时官方数字不会变，自动查询和展开面板都不会发请求。「立即刷新」只要求出口可用，自动查询总会给它留出一次。到了重置时间，那一项直接归零，不用等查询。关闭后仍可看本机费用。",
+                "Official usage sends your login to Anthropic and must use the same network as Claude Code. Automatic checks run only while the exit is allowed and Claude Code (Terminal or desktop) is in use. With no new tokens the numbers cannot change, so neither automatic checks nor opening the panel send a request. Refresh only needs an allowed exit, and automatic checks always leave one for it. A limit drops to 0% when it resets, without waiting for a check. Local cost stays available when this is off."
             ))
                 .font(.system(size: 11))
                 .foregroundStyle(Palette.tertiary)
@@ -220,26 +226,6 @@ private struct UsagePage: View {
         case .signedOut: return L10n.t("Claude Code 的登录已失效（登录到期或已退出），需要重新登录", "The Claude Code login is no longer valid. Sign in again.")
         case .failed(let message): return L10n.t("暂时无法获取（\(message)），稍后自动重试", "Unavailable (\(message)). Retrying shortly.") + (synced.map { " · \($0)" } ?? "")
         case .disabled: return L10n.t("已关闭，菜单栏与面板不显示 5 小时 / 每周用量", "Off. The menu bar and panel hide 5-hour and weekly usage.")
-        }
-    }
-
-    private var autoSyncDetail: String {
-        switch prefs.autoSyncMode {
-        case .consumption:
-            return L10n.t(
-                "按本机的 Token 消耗决定：Token 没有变化就不查询；消耗越快查得越勤，最快 10 秒一次，持续消耗时最长 2 分钟一次，消耗停下后再补查一次。",
-                "Follows local token use. No new tokens, no check. The faster tokens go, the more often it checks, at most every 10 seconds and at least every 2 minutes while tokens are used, plus one more check after use stops."
-            )
-        case .every10Seconds:
-            return L10n.t(
-                "Claude Code 正在使用时每 10 秒检查一次，Token 有变化才查询。间隔这么短容易被接口限流，被限流后要等 5 到 30 分钟。",
-                "Looks every 10 seconds while Claude Code is in use and checks only if tokens were used. This often hits the rate limit, and then checks pause for 5 to 30 minutes."
-            )
-        case let mode:
-            let seconds = Int(mode.interval ?? 0)
-            let zh = seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分钟"
-            let en = seconds < 60 ? "\(seconds) seconds" : (seconds == 60 ? "minute" : "\(seconds / 60) minutes")
-            return L10n.t("Claude Code 正在使用时每 \(zh)检查一次，Token 有变化才查询。", "Looks every \(en) while Claude Code is in use and checks only if tokens were used.")
         }
     }
 

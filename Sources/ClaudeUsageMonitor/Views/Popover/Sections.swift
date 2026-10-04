@@ -64,8 +64,8 @@ struct LimitsSection: View {
 
     private func statusHelp(_ official: OfficialUsageService) -> String {
         var lines = [L10n.t(
-            "来自 Claude 官方用量接口（与 Claude Code /usage 相同）。Claude Code 正在使用时，按「设置 › 用量 › 自动查询」的频率同步；随时可以点「立即刷新」",
-            "From the same endpoint as Claude Code /usage. While Claude Code is in use, it syncs as set in Settings > Usage > Check automatically. Refresh works any time."
+            "来自 Claude 官方用量接口（与 Claude Code /usage 相同）。Claude Code 正在使用时，消耗够让数字变化就同步；随时可以点「立即刷新」",
+            "From the same endpoint as Claude Code /usage. While Claude Code is in use, it syncs once usage is enough to change the numbers. Refresh works any time."
         )]
         if let usage = official.usage { lines.append(L10n.t("上次同步：\(Self.moment(usage.fetchedAt))", "Last sync: \(Self.moment(usage.fetchedAt))")) }
         if official.state != .connected, official.usage != nil { lines.append(Self.unavailableReason(official.state, fetching: official.isFetching)) }

@@ -78,6 +78,16 @@ public struct OfficialUsage: Sendable, Equatable {
         return Date(timeIntervalSince1970: reset.timeIntervalSince1970.rounded())
     }
 
+    /// 晚于 now 的下一次重置：到了这一刻，那几项的新窗口从 0%（还没有用量）开始。
+    /// 本周与按模型的周额度常相差不到一秒（例如 21:59:59.9 与 22:00:00），算作同一时刻，取其中最晚的，
+    /// 到点时它们都已经重置，一起归零。
+    public func nextReset(after now: Date) -> Date? {
+        let limits = [fiveHour, sevenDay, sevenDaySonnet, sevenDayOpus].compactMap { $0 } + scoped.map(\.limit)
+        let upcoming = limits.compactMap(\.resetsAt).filter { $0 > now }
+        guard let first = upcoming.min() else { return nil }
+        return upcoming.filter { $0.timeIntervalSince(first) < 1 }.max()
+    }
+
     /// 每周限额的重置时刻（本地时区的时、分），月度筛选用同一时刻切开。
     public func weeklyResetClock(calendar cal: Calendar = .current) -> (hour: Int, minute: Int)? {
         guard let reset = weeklyReset() else { return nil }

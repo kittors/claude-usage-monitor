@@ -154,21 +154,6 @@ enum CostSpan: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-extension AutoSyncMode: Identifiable {
-    public var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .consumption: L10n.tNow("按 Token 消耗", "By token use")
-        case .every10Seconds: L10n.tNow("每 10 秒", "Every 10 seconds")
-        case .every30Seconds: L10n.tNow("每 30 秒", "Every 30 seconds")
-        case .everyMinute: L10n.tNow("每 1 分钟", "Every minute")
-        case .every2Minutes: L10n.tNow("每 2 分钟", "Every 2 minutes")
-        case .every5Minutes: L10n.tNow("每 5 分钟", "Every 5 minutes")
-        }
-    }
-}
-
 /// 偏好设置（`UserDefaults` 持久化）。
 @MainActor
 @Observable
@@ -240,8 +225,15 @@ final class Preferences {
     var officialProxy: String { didSet { save(officialProxy, "officialProxy") } }
     /// Claude Code 的登录快过期时自动续期。默认开启。
     var autoRenewLogin: Bool { didSet { save(autoRenewLogin, "autoRenewLogin") } }
-    /// 自动查询官方用量的频率。默认按 Token 消耗。
-    var autoSyncMode: AutoSyncMode { didSet { save(autoSyncMode.rawValue, "autoSyncMode") } }
+    /// 自动查询的最短间隔（秒）：两次自动查询至少隔这么久。默认 30 秒，可以在 10 秒到 1 小时之间自定义。
+    /// 什么时候查由 Token 消耗决定（见 `AutoSyncPolicy`），这里只限制最快的频率。
+    var autoSyncInterval: TimeInterval {
+        didSet {
+            let clamped = AutoSyncPolicy.clampedInterval(autoSyncInterval)
+            if autoSyncInterval != clamped { autoSyncInterval = clamped }
+            save(clamped, "autoSyncInterval")
+        }
+    }
     /// 点开菜单栏图标时刷新一次。默认开启。
     var refreshOnOpen: Bool { didSet { save(refreshOnOpen, "refreshOnOpen") } }
     /// 面板里重置时间的写法。默认「周六 22:00」。
@@ -289,7 +281,12 @@ final class Preferences {
         } else {
             autoRenewLogin = d.object(forKey: "autoRenewLogin") as? Bool ?? true
         }
-        autoSyncMode = AutoSyncMode(rawValue: d.string(forKey: "autoSyncMode") ?? "") ?? .consumption
+        // 1.2.5 及以前「自动查询」选的是几档固定频率：换成同样秒数的最短间隔，之后不再需要这一项
+        if let legacy = d.string(forKey: "autoSyncMode").flatMap(AutoSyncPolicy.legacyInterval), d.object(forKey: "autoSyncInterval") == nil {
+            d.set(legacy, forKey: "autoSyncInterval")
+        }
+        d.removeObject(forKey: "autoSyncMode")
+        autoSyncInterval = AutoSyncPolicy.clampedInterval(d.object(forKey: "autoSyncInterval") as? Double ?? AutoSyncPolicy.defaultInterval)
         refreshOnOpen = d.object(forKey: "refreshOnOpen") as? Bool ?? true
         resetTimeStyle = ResetTimeStyle(rawValue: d.string(forKey: "resetTimeStyle") ?? "") ?? .weekday
         showsResetCountdown = d.object(forKey: "showsResetCountdown") as? Bool ?? false

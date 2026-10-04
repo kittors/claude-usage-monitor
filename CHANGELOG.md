@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-10-04
+
+### Changed
+
+- Automatic checks ask only when the numbers can have moved. The official percentages are whole numbers, so the app works out from the current window how much local usage moves one by a point, and checks once that much has been used, or about a third of it when Claude Code pauses between turns. Replaying a heavy morning, this sent 25 requests in two hours instead of 126, and new numbers showed up about a minute and a half after they changed.
+- Requests to the usage endpoint share a budget that survives restarts: about one every 5 minutes on average, a few in a row after a quiet spell, and one always kept for **Refresh**. Every Claude client on the account draws on the same allowance, and a refusal comes without a wait time, so staying well under it is what keeps checks from being rate-limited. If a 429 still arrives, the budget empties before checks back off.
+- **Settings > Usage > Interval** sets the shortest gap between automatic checks, 30 seconds by default and anything from 10 seconds to 1 hour. The fixed frequencies under **Check automatically** are gone. A frequency chosen before carries over as the interval.
+- Opening the panel checks only when usage since the last sync may have moved the numbers.
+- The menu bar shield stays still during the exit check before each request. It turns red and spins only when the network changes and a safe exit is checked again.
+- An exit check takes about 0.7 seconds instead of more than 4. Without an IPv6 route, the IPv6 probe now ends at once instead of waiting out its timeout, so every sync finishes sooner.
+
+### Fixed
+
+- A limit drops to 0% the moment it resets, in the panel and the menu bar, without waiting for a check. Before, the panel kept the last period's percentage beside "Reset" until the next sync came back. This week's cost switches to the new week at the same moment.
+- While the exit is checked again in the background, a failed exit no longer shows a safe shield before the result arrives.
+
 ## [1.2.5] - 2026-10-01
 
 ### Changed

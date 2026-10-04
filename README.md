@@ -45,7 +45,7 @@ plus what your Claude Code sessions would cost at API prices. Native, private, a
 <td valign="top">
 
 **Checks when it matters**<br>
-Only while Claude Code is in use, paced by how fast tokens go, and never within 10 seconds of the last check. Opening the panel refreshes right away when there is new usage.
+Only while Claude Code is in use and usage is enough to move the numbers, at most one check every 5 minutes on average, so it stays clear of rate limits. Opening the panel refreshes right away when the numbers may have moved.
 
 </td>
 <td valign="top">
@@ -118,12 +118,16 @@ The app reads the Claude Code login from the keychain and calls `GET https://api
 <summary><b>When it checks</b></summary>
 <br>
 
-The endpoint is rate-limited: at one request a minute it starts returning HTTP 429 after a dozen or so. Automatic checks run only while Claude Code is in use, meaning a session is running in Terminal or in the desktop app and it used tokens in the last 5 minutes. They also need tokens used since the last sync: with no new tokens the numbers cannot change, so no request is sent at any interval. **Settings › Usage › Check automatically** sets how often:
+The endpoint is rate-limited, and every Claude client on the account shares the same allowance: after twenty or thirty requests in a row it returns HTTP 429 without saying how long to wait. So the app asks only when the numbers can have moved:
 
-- **By token use** (default). Check once new usage since the last check reaches $0.50 at API prices, at least every 2 minutes while tokens keep going, and once more 15 seconds after they stop.
-- **A fixed interval** of 10 seconds, 30 seconds, 1 minute, 2 minutes, or 5 minutes, checking only if tokens were used. Shorter intervals hit the rate limit sooner.
+- The official percentages are whole numbers and change one point at a time. From the current window itself (local usage in the window at the last sync ÷ the official percentage), the app works out how much local usage moves a percentage by one point, and checks once that much has been used. When Claude Code pauses for 15 seconds between turns, it also checks once about a third of that has been used. While a window is still at 0%, it asks again once the window's usage has doubled. This estimate only decides when to check. The numbers shown still come only from the official endpoint.
+- While tokens keep going, it checks at least every 15 minutes, which catches usage on other devices.
+- It checks only while Claude Code is in use (a session is running in Terminal or in the desktop app and used tokens in the last 5 minutes) and tokens were used since the last sync, with at least **Settings › Usage › Interval** between checks (30 seconds by default, anywhere from 10 seconds to 1 hour).
+- All requests share one budget that survives restarts: about one every 5 minutes on average, a few in a row after a quiet spell, and one always kept for **Refresh**. If a 429 still comes back, the budget empties and checks back off for 5 to 30 minutes.
 
-While Claude Code is in use, the app also checks when a window resets, at launch, after wake, and when the exit becomes allowed again. Opening the panel checks right away when tokens were used since the last sync (**Check when the panel opens**, on by default). With no new usage the numbers cannot change, so no request is sent. Like **Refresh**, it only needs an allowed exit, and the refresh icon keeps turning until the new numbers arrive. Any two requests are at least 10 seconds apart. After a 429 it backs off for 5 to 30 minutes.
+Replaying a heavy morning, the old pacing sent 126 requests in two hours, and 115 of them came back unchanged. The new pacing sends 25, and new numbers show up about a minute and a half after they change.
+
+At launch, after wake, and when the exit becomes allowed again, it checks once if Claude Code is in use. When a limit reaches its reset time, it drops to 0% in the panel and the menu bar on the spot, without waiting for a check. Opening the panel checks right away when usage since the last sync may have moved the numbers (**Check when the panel opens**, on by default), and the refresh icon keeps turning until the new numbers arrive.
 
 </details>
 
@@ -131,7 +135,7 @@ While Claude Code is in use, the app also checks when a window resets, at launch
 <summary><b>The exit check</b></summary>
 <br>
 
-Before each request the app asks `api.anthropic.com` which exit it sees, over the same connection the request will use. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, nothing is sent. Official requests use IPv4 only. If an IPv6 connection to Claude goes out directly from one of those regions, the panel and the menu bar show a severe warning. The panel checks again when the route, a network interface, or the system proxy changes, and does not poll in between. While a safe exit is checked again, the menu bar shield turns red and a short arc spins inside it. A risky exit keeps its warning until the result arrives.
+Before each request the app asks `api.anthropic.com` which exit it sees, over the same connection the request will use. If that check fails, or the exit is in mainland China, Hong Kong, or Macau, nothing is sent. Official requests use IPv4 only. If an IPv6 connection to Claude goes out directly from one of those regions, the panel and the menu bar show a severe warning. This check before a request runs in the background, and the shield stays as it is. The panel checks again when the route, a network interface, or the system proxy changes, and does not poll in between. Then, if the exit was safe, the menu bar shield turns red and a short arc spins inside it, while a risky exit keeps its warning until the result arrives. Without an IPv6 route the IPv6 probe ends at once, so a check takes about 0.7 seconds.
 
 </details>
 

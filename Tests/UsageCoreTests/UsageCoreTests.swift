@@ -231,6 +231,19 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
                 session: 0, model: 0, webSearches: 0, flags: 0)
 }
 
+@Test func fiveHourCostCoversTheOfficialWindowOnly() {
+    let now = date("2026-10-04 10:00")
+    let reset = date("2026-10-04 13:20")
+    let t = now.timeIntervalSince1970
+    // 窗口是重置前的 5 小时（08:20 起）：08:10 那条属于上一个窗口
+    let records = [record(date("2026-10-04 08:10").timeIntervalSince1970), record(date("2026-10-04 08:20").timeIntervalSince1970), record(t - 60)]
+    let index = IndexSnapshot(records: records, models: ["claude-opus-5-5"])
+    let snap = UsageCalculator.snapshot(of: index, settings: UsageSettings(fiveHourReset: reset, calendar: shanghai), now: now)
+    #expect(abs((snap.fiveHourCost ?? 0) - 40) < 1e-9)
+    // 没有进行中的 5 小时窗口
+    #expect(UsageCalculator.snapshot(of: index, settings: UsageSettings(calendar: shanghai), now: now).fiveHourCost == nil)
+}
+
 @Test func snapshotCoversBillingPeriodAndDays() {
     let now = date("2026-09-28 12:00")
     let t = now.timeIntervalSince1970
@@ -307,6 +320,25 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     let scoped = OfficialUsage(scoped: [ScopedLimit(modelName: "Fable", limit: OfficialLimit(utilization: 0, resetsAt: date("2026-10-03 22:15")))])
     let scopedClock = try #require(scoped.weeklyResetClock(calendar: shanghai))
     #expect(scopedClock.hour == 22 && scopedClock.minute == 15)
+}
+
+@Test func nextResetIsTheEarliestUpcomingWindow() throws {
+    let now = date("2026-10-04 08:30")
+    let usage = OfficialUsage(
+        fiveHour: OfficialLimit(utilization: 12, resetsAt: date("2026-10-04 13:20").addingTimeInterval(-0.093)),
+        sevenDay: OfficialLimit(utilization: 40, resetsAt: date("2026-10-10 22:00").addingTimeInterval(-0.092)),
+        scoped: [ScopedLimit(modelName: "Fable", limit: OfficialLimit(utilization: 7, resetsAt: date("2026-10-10 22:00")))]
+    )
+    #expect(usage.nextReset(after: now) == date("2026-10-04 13:20").addingTimeInterval(-0.093))
+
+    // 5 小时已经过了：下一个是每周。本周与 Fable 只差 0.092 秒，算同一时刻，取较晚的，到点时两项都已重置
+    let weekly = try #require(usage.nextReset(after: date("2026-10-04 13:20")))
+    #expect(weekly == date("2026-10-10 22:00"))
+    #expect(usage.sevenDay!.resetsAt! < weekly && usage.scoped[0].limit.resetsAt! <= weekly)
+
+    // 全都过了，或者没有重置时间（5 小时空闲时官方不给）：没有下一个
+    #expect(usage.nextReset(after: date("2026-10-10 22:00")) == nil)
+    #expect(OfficialUsage(fiveHour: OfficialLimit(utilization: 0, resetsAt: nil)).nextReset(after: now) == nil)
 }
 
 @Test func comparesVersionsAndReadsGitHubRelease() throws {

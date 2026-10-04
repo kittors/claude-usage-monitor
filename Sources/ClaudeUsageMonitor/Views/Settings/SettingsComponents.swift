@@ -172,7 +172,7 @@ struct ProxyField: View {
     }
 }
 
-/// 数值输入
+/// 数值输入：回车或移开焦点时提交。设置可能把数值修正到允许的范围，提交后显示修正后的值。
 struct NumberField: View {
     @Binding var value: Double
     var prefix: String?
@@ -180,18 +180,32 @@ struct NumberField: View {
     var fractionDigits = 0
     var width: CGFloat = 64
     @FocusState private var focused: Bool
+    @State private var text = ""
 
     var body: some View {
         FieldChrome(focused: focused) {
             if let prefix { Text(prefix).foregroundStyle(Palette.tertiary) }
-            TextField("", value: $value, format: .number.precision(.fractionLength(fractionDigits)))
+            TextField("", text: $text)
                 .textFieldStyle(.plain)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
                 .focused($focused)
                 .frame(width: width)
+                .onSubmit(commit)
             if let suffix { Text(suffix).foregroundStyle(Palette.tertiary) }
         }
+        .onAppear { text = formatted(value) }
+        .onChange(of: value) { _, new in if !focused { text = formatted(new) } }
+        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+    }
+
+    private func commit() {
+        if let number = try? Double(text.trimmingCharacters(in: .whitespaces), format: .number) { value = number }
+        text = formatted(value)
+    }
+
+    private func formatted(_ number: Double) -> String {
+        number.formatted(.number.grouping(.never).precision(.fractionLength(fractionDigits)))
     }
 }
 

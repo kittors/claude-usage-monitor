@@ -29,7 +29,9 @@ struct LimitRow: Identifiable, Equatable {
 extension UsageStore {
     /// 当前应展示的限额行：第一行为 5 小时，第二行为本周全部模型，之后是按模型划分的周额度
     var limitRows: [LimitRow] {
-        official.usage.map { Self.rows(from: $0, now: Date()) } ?? []
+        // 依赖 resetEpoch：到了重置时间，界面会重新取一遍，那一行归零
+        _ = resetEpoch
+        return official.usage.map { Self.rows(from: $0, now: Date()) } ?? []
     }
 
     /// 菜单栏上某一项的当前数值；还没有数据时为 nil

@@ -119,6 +119,8 @@ final class UsageStore {
     private(set) var indexedFiles = 0
     /// 用户发起的刷新（点「立即刷新」或打开面板）还在进行：官方查询回来后才结束
     private(set) var isRefreshing = false
+    /// 每过一个限额的重置时间 +1：用到限额行的界面随之重算，到点的那一行归零，不用等官方同步
+    private(set) var resetEpoch = 0
 
     @ObservationIgnored let prefs: Preferences
     @ObservationIgnored let engine = UsageEngine()
@@ -128,6 +130,7 @@ final class UsageStore {
     @ObservationIgnored var onUpdate: (() -> Void)?
     @ObservationIgnored private var watcher: SessionWatcher?
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var resetTimer: Timer?
     @ObservationIgnored private var pendingScan: DispatchWorkItem?
     @ObservationIgnored private var lastScanAt = Date.distantPast
     @ObservationIgnored private var rescanRequested = false
@@ -143,6 +146,7 @@ final class UsageStore {
         official.autoRenew = prefs.autoRenewLogin
         official.outboundProxy = OutboundProxy.parse(prefs.officialProxy)
         lastSeenSync = official.usage?.fetchedAt
+        scheduleNextReset()
         NetworkPlace.shared.proxy = official.outboundProxy
         NetworkPlace.shared.onUpdate = { [weak self] in self?.exitChecked() }
         NetworkPlace.shared.refresh()
@@ -180,11 +184,11 @@ final class UsageStore {
         NetworkPlace.shared.refreshIfStale()
         if prefs.refreshOnOpen {
             rescanNow()
-            // 上次同步之后没有新的 Token 消耗，官方数字不会变，再查一次没有意义；等待登录时只读本地钥匙串，照常检查
-            if official.state.awaitingLogin || hasNewUsageSinceSync() {
+            // 上次同步之后的消耗还不够让数字变化，再查一次没有意义；等待登录时只读本地钥匙串，照常检查
+            if official.state.awaitingLogin || worthCheckingOnOpen() {
                 isRefreshing = requestOfficial(.opened)
             } else {
-                // 刚写进日志的消耗可能还没扫到：几秒内扫到新消耗就补查一次
+                // 刚写进日志的消耗可能还没扫到：几秒内扫到足够的新消耗就补查一次
                 openCheckUntil = Date().addingTimeInterval(5)
             }
         }
@@ -245,8 +249,10 @@ final class UsageStore {
     }
 
     /// 计费周期配置。重置时刻用官方每周限额（面板上的「周六 22:00」），还没同步过时用上次记下的时刻。
+    /// 另带上进行中的 5 小时窗口，用来推算数字涨一格要多少消耗（只决定查询时机）。
     func billingSettings() -> UsageSettings {
         var settings = prefs.usageSettings
+        if let reset = official.usage?.fiveHour?.resetsAt, reset > Date() { settings.fiveHourReset = reset }
         if let reset = official.usage?.weeklyReset() ?? prefs.weeklyResetAt {
             settings.weeklyReset = reset
             let parts = Calendar.current.dateComponents([.hour, .minute, .second], from: reset)
@@ -301,6 +307,7 @@ final class UsageStore {
             if let minute = parts.minute, prefs.billingAnchorMinute != minute { prefs.billingAnchorMinute = minute }
             if let second = parts.second, prefs.billingAnchorSecond != second { prefs.billingAnchorSecond = second }
         }
+        scheduleNextReset()
         onUpdate?()
     }
 
@@ -417,12 +424,41 @@ final class UsageStore {
         }
         observers.append(center.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main, using: recompute))
         observers.append(center.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main, using: recompute))
+        // 系统时间被调整：重置定时器按旧的时间排的，重新判断
+        observers.append(center.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyResets() }
+        })
         observers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
+                // 睡眠期间可能已经过了重置时间，定时器也会晚到
+                self?.applyResets()
                 self?.scheduleScan(after: 2)
                 self?.evaluateAutoSync(.resume)
             }
         })
+    }
+
+    // MARK: 重置时刻
+
+    /// 在下一个重置时刻刷新：到点的那一项，新窗口从 0% 开始，不用等官方同步
+    private func scheduleNextReset() {
+        resetTimer?.invalidate()
+        resetTimer = nil
+        guard let next = official.usage?.nextReset(after: Date()) else { return }
+        // 稍晚一点触发，到点时那几项一定已经算作重置
+        let timer = Timer(fire: next.addingTimeInterval(0.05), interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyResets() }
+        }
+        timer.tolerance = 0.05
+        RunLoop.main.add(timer, forMode: .common)
+        resetTimer = timer
+    }
+
+    /// 按现在的时间重新判断哪些窗口已经重置：到点的限额行归零，本周费用切到新的一周
+    private func applyResets() {
+        withAnimation(.smooth(duration: 0.6)) { resetEpoch += 1 }
+        recompute()
+        scheduleNextReset()
     }
 
     // MARK: 自动查询官方用量
@@ -444,7 +480,7 @@ final class UsageStore {
     @ObservationIgnored private var openCheckUntil = Date.distantPast
     @ObservationIgnored private var exitWasAllowed = false
 
-    /// 每 2 秒按「设置 › 用量 › 自动查询」判断一次；没有新消耗时几乎不做事
+    /// 每 2 秒判断一次要不要查；没有新消耗时几乎不做事
     private func startAutoSync() {
         autoSyncTimer?.invalidate()
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
@@ -469,7 +505,7 @@ final class UsageStore {
         }
         observedCost = cost
         if syncedCost == nil { syncedCost = cost }
-        if increased, Date() < openCheckUntil {
+        if increased, Date() < openCheckUntil, worthCheckingOnOpen() {
             openCheckUntil = .distantPast
             isRefreshing = requestOfficial(.opened)
         }
@@ -491,27 +527,58 @@ final class UsageStore {
     }
 
     /// 最近一次消耗：会话记录的时间与看到累计消耗增加的时间，取较晚的一个
-    private func consumptionActivity() -> AutoSyncPolicy.Activity {
+    private func consumptionActivity(_ now: Date) -> AutoSyncPolicy.Activity {
         let cost = observedCost ?? 0
+        let unsynced = max(0, cost - (syncedCost ?? cost))
         return AutoSyncPolicy.Activity(
             claudeCodeRunning: false,
             lastConsumption: [snapshot?.lastRecord, lastCostIncrease].compactMap { $0 }.max(),
-            unsyncedCost: max(0, cost - (syncedCost ?? cost)),
-            hasNewUsage: hasNewUsageSinceSync()
+            unsyncedCost: unsynced,
+            hasNewUsage: hasNewUsageSinceSync(),
+            step: visibleStep(now, unsynced: unsynced)
         )
+    }
+
+    /// 官方百分比涨一格大约要多少本机消耗：分别按 5 小时窗口和本周在上次同步时的本机消耗与官方百分比推算，取小的那个。
+    /// 只用来安排查询时机，显示的数字仍然只来自官方。
+    private func visibleStep(_ now: Date, unsynced: Double) -> Double {
+        guard let usage = official.usage, let snapshot else { return AutoSyncPolicy.minimumStep }
+        // 窗口里现在的消耗减去同步之后新增的，就是上次同步时的消耗
+        func atSync(_ cost: Double) -> Double { max(0, cost - unsynced) }
+        var windows: [AutoSyncPolicy.Window] = []
+        if let five = usage.fiveHour {
+            if let reset = five.resetsAt, reset > now {
+                windows.append(.init(cost: atSync(snapshot.fiveHourCost ?? 0), percent: five.percent))
+            } else {
+                // 没有进行中的窗口（或已经到了重置时间）：下一笔消耗会开一个新窗口，按最小的一格尽快问一次
+                windows.append(.init(cost: 0, percent: 0))
+            }
+        }
+        if let week = usage.sevenDay, let cost = snapshot.week?.cost {
+            // 到了重置时间、还没同步：本周已经切到新的一周，从 0% 算起
+            let current = week.resetsAt.map { $0 > now } ?? true
+            windows.append(.init(cost: atSync(cost), percent: current ? week.percent : 0))
+        }
+        return AutoSyncPolicy.step(windows)
+    }
+
+    /// 展开面板时值不值得查：攒下的消耗可能已经让数字变了，或者有新消耗、但很久没查过了
+    private func worthCheckingOnOpen() -> Bool {
+        let now = Date()
+        return AutoSyncPolicy.shouldCheckOnOpen(activity: consumptionActivity(now), lastRequest: official.lastAttempt, now: now)
     }
 
     /// 自动查询：只有 Claude Code 正在使用（终端或桌面版）、出口可用时才会发出
     private func evaluateAutoSync(_ occasion: AutoSyncPolicy.Occasion) {
         guard prefs.officialUsageEnabled, official.state != .disabled else { return }
         let now = Date()
-        var activity = consumptionActivity()
+        var activity = consumptionActivity(now)
         // 最近没有消耗就不必再检查进程
         guard AutoSyncPolicy.hasRecentConsumption(activity, now: now) else { return }
         activity.claudeCodeRunning = claudeCodeRunning(now)
         guard AutoSyncPolicy.shouldSync(
-            mode: prefs.autoSyncMode, occasion: occasion, activity: activity,
-            lastRequest: official.lastAttempt, windowReset: official.windowHasReset(now), now: now
+            interval: prefs.autoSyncInterval, occasion: occasion, activity: activity,
+            lastRequest: official.lastAttempt, now: now
         ) else { return }
         guard !NetworkPlace.shared.blocksOfficialUsage else {
             // 出口还没确认，或上次确认时不可用：重新确认，变为可用后会再判断一次

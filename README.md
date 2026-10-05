@@ -44,6 +44,20 @@ plus what your Claude Code sessions would cost at API prices. Native, private, a
 <tr>
 <td valign="top">
 
+**See a limit coming**<br>
+A safe line on the 5-hour and weekly bars shows how much can be used by now and still last until the reset. The 5-hour line follows the clock; the weekly line adds a seventh each day. Usage past it turns red, and pointing at a bar shows the line and what is left.
+
+</td>
+<td valign="top">
+
+**Clawd keeps watch**<br>
+Clawd holds the exit shield in its own pixel style and color, and the shield turns red when the exit is not safe. It blinks, looks around, and hops, with moves taken from Claude Code.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
 **Checks when it matters**<br>
 Only while Claude Code is in use and usage is enough to move the numbers, at most one check every 5 minutes on average, so it stays clear of rate limits. Opening the panel refreshes right away when the numbers may have moved.
 
@@ -59,7 +73,7 @@ Confirms the exit Anthropic sees before every request, pauses in mainland China,
 <td valign="top">
 
 **Spend you can read**<br>
-API-equivalent cost for this week, the billing month, or today, with the token mix, cache savings, a per-model split, and a 14-day trend.
+API-equivalent cost for this week, the billing month, or today, with a projected total at the current pace, the token mix, cache savings, a per-model split, and a 14-day trend.
 
 </td>
 <td valign="top">
@@ -77,7 +91,7 @@ Renews the Claude Code login the way Claude Code does, with the same locks, so t
 <tr>
 <td width="40%" align="center" valign="top">
 <img src="docs/images/en/panel.png" alt="Menu bar panel"><br>
-<sub><b>The panel</b> · limits, spend, and processes</sub>
+<sub><b>The panel</b> · limits with safe lines, spend, and processes</sub>
 </td>
 <td width="60%" align="center" valign="top">
 <img src="docs/images/en/settings-display.png" alt="Settings, Display"><br>

@@ -44,6 +44,20 @@
 <tr>
 <td valign="top">
 
+**离限流还有多远**<br>
+5 小时和每周额度的进度条上有一条安全线：此刻用到这里为止，就能撑到重置。5 小时随时间走，每周按天算、每天多 1/7。超线的部分变红，鼠标指上去能看到安全线是多少、还能用多少。
+
+</td>
+<td valign="top">
+
+**Clawd 守着出口**<br>
+菜单栏里的 Clawd 用同一套像素画举着出口盾牌，平时和它同色，出口不安全时变红；它会眨眼、张望、蹦跳，动作都取自 Claude Code。
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
 **该查的时候才查**<br>
 只在 Claude Code 正在使用、消耗够让数字变化时查询，平均每 5 分钟最多 1 次，避开官方限流；点开面板时数字可能变了就立即刷新。
 
@@ -59,7 +73,7 @@
 <td valign="top">
 
 **花费一目了然**<br>
-本周、本月周期或当天的 API 等价费用，外加 Token 构成、缓存节省、按模型拆分和近 14 天趋势。
+本周、本月周期或当天的 API 等价费用和照现在速度的预计总额，外加 Token 构成、缓存节省、按模型拆分和近 14 天趋势。
 
 </td>
 <td valign="top">
@@ -77,7 +91,7 @@
 <tr>
 <td width="40%" align="center" valign="top">
 <img src="docs/images/zh/panel.png" alt="菜单栏面板"><br>
-<sub><b>面板</b> · 额度、花费与进程</sub>
+<sub><b>面板</b> · 额度与安全线、花费与进程</sub>
 </td>
 <td width="60%" align="center" valign="top">
 <img src="docs/images/zh/settings-display.png" alt="设置 › 显示"><br>

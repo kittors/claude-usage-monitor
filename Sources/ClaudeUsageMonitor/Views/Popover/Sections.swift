@@ -470,7 +470,9 @@ struct CycleSection: View {
 
     private func header(_ billing: PeriodUsage, money: MoneyFormat, recent: [DayUsage], now: Date) -> some View {
         let daily = billing.dailyAverage(now: now)
-        let projected = billing.projectedCost(now: now)
+        // 多天的周期：预计就是面板上显示的日均 × 天数，两个数对得上；只有一天时按小时外推
+        let projected = prefs.costSpan == .day ? billing.projectedCost(now: now) : daily * Double(billing.dayCount)
+        let projectedText = prefs.costSpan == .day ? money.whole(projected) : money.whole(daily, times: billing.dayCount)
         let summary = prefs.costSpan == .day
             ? L10n.t("当天", "Today")
             : L10n.t("第 \(billing.dayIndex) / \(billing.dayCount) 天 · 日均 \(money.whole(daily))", "Day \(billing.dayIndex) of \(billing.dayCount) · \(money.whole(daily))/day")
@@ -495,7 +497,7 @@ struct CycleSection: View {
                         }
                         .help(L10n.t("点击切换货币", "Click to change currency"))
                     if billing.cost > 0 {
-                        Text(L10n.t("预计 \(money.whole(projected))", "→ \(money.whole(projected))"))
+                        Text(L10n.t("预计 \(projectedText)", "→ \(projectedText)"))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Palette.tertiary)
                             .monospacedDigit()
@@ -503,8 +505,8 @@ struct CycleSection: View {
                             .lineLimit(1)
                             .fixedSize()
                             .help(prefs.costSpan == .day
-                                ? L10n.t("照今天到现在的速度，今天预计一共 \(money.whole(projected))", "At today's pace so far, about \(money.whole(projected)) today")
-                                : L10n.t("照现在的速度，这个周期预计一共 \(money.whole(projected))（日均 \(money.whole(daily)) × \(billing.dayCount) 天）", "At this pace, about \(money.whole(projected)) for the period (\(money.whole(daily))/day × \(billing.dayCount) days)"))
+                                ? L10n.t("照今天到现在的速度，今天预计一共 \(projectedText)", "At today's pace so far, about \(projectedText) today")
+                                : L10n.t("照现在的速度，这个周期预计一共 \(projectedText)（日均 \(money.whole(daily)) × \(billing.dayCount) 天）", "At this pace, about \(projectedText) for the period (\(money.whole(daily))/day × \(billing.dayCount) days)"))
                             .transition(.opacity)
                     }
                 }

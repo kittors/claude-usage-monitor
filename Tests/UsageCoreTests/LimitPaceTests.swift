@@ -134,3 +134,15 @@ private func period(days: Int, cost: Double) -> PeriodUsage {
     #expect(Apportion.rounded([1, 1], total: 10) == [5, 5])
     #expect(Apportion.rounded([5, 5], total: 0) == [0, 0])
 }
+
+@Test func projectionMatchesTheShownDailyAverage() {
+    let usd = MoneyFormat()
+    // 日均显示 $462（实际 $461.57），乘出来是 $3,234，而不是 461.57 × 7 = $3,231
+    #expect(usd.whole(461.57) == "$462")
+    #expect(usd.whole(461.57, times: 7) == "$3,234")
+    // 不足 100 时日均保留两位小数
+    #expect(usd.whole(12.345, times: 7) == "$86.45")
+    #expect(usd.whole(20.004, times: 7) == "$140")
+    let yen = MoneyFormat(unit: .jpy, rate: 150)
+    #expect(yen.whole(3.333, times: 30) == "JP¥15,000")
+}

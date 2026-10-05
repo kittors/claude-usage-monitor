@@ -218,9 +218,19 @@ public struct MoneyFormat: Sendable, Equatable {
 
     /// 整数金额：`$5,300`；不足 100 时保留两位小数
     public func whole(_ usd: Double) -> String {
+        Self.whole(convert(usd), unit: unit)
+    }
+
+    /// 按 `whole(_:)` 显示出来的金额乘以份数，例如日均 × 天数。面板上的日均乘出来正好是这个数，不会差几块钱。
+    public func whole(_ usd: Double, times count: Int) -> String {
         let v = convert(usd)
-        if unit.fractionDigits == 0 || abs(v) >= 100 { return symbol + Fmt.grouped(Int64(v.rounded())) }
-        return symbol + String(format: "%.2f", v)
+        let shown = unit.fractionDigits == 0 || abs(v) >= 100 ? v.rounded() : (v * 100).rounded() / 100
+        return Self.whole(shown * Double(count), unit: unit)
+    }
+
+    private static func whole(_ v: Double, unit: Unit) -> String {
+        if unit.fractionDigits == 0 || abs(v) >= 100 { return unit.symbol + Fmt.grouped(Int64(v.rounded())) }
+        return unit.symbol + String(format: "%.2f", v)
     }
 }
 

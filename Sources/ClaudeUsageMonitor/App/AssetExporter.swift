@@ -58,7 +58,7 @@ enum AssetExporter {
                 showsSafety: true, exitSafe: safe, ipv6Direct: severe, shieldLoading: loading, shieldPhase: .pi / 3, onDarkMenuBar: dark
             ))
         }
-        for (name, input) in [
+        let previews: [(String, Input)] = [
             ("menubar-mascot", Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
             ("menubar-mascot-armsup", Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71, frame: MascotFrame(pose: .armsUp))),
             ("menubar-logo", Input(icon: .logo, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
@@ -74,15 +74,17 @@ enum AssetExporter {
             ("menubar-stacked", Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, frame: holding, showsSafety: true, exitSafe: true, onDarkMenuBar: false)),
             ("menubar-stacked-dark", Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, frame: holding, showsSafety: true, exitSafe: true, onDarkMenuBar: true)),
             ("menubar-stacked-en-dark", Input(icon: .logo, style: .iconPercent, values: english, primary: 0.04, secondary: 0.98, fraction: 0.98, onDarkMenuBar: true)),
-        ] {
+        ]
+        for (name, input) in previews {
             let image = StatusIconRenderer.image(input)
             write(snapshot([[image]], gap: 0, dark: name.hasSuffix("-dark")), to: dir.appendingPathComponent("\(name).png"))
         }
 
         // 官方动画逐帧：每段一行，Clawd 拿着安全盾牌
         let base = Input(icon: .mascot, style: .icon, values: [], primary: 0, secondary: 0, fraction: 0.3, showsSafety: true, exitSafe: true)
-        let sequences = [[holding] + MascotAnimation.blink(holding)] + MascotAnimation.allCases.map(\.frames)
-        let rows = sequences.map { frames in
+        var sequences: [[MascotFrame]] = [[holding] + MascotAnimation.blink(holding)]
+        sequences += MascotAnimation.allCases.map(\.frames)
+        let rows: [[NSImage]] = sequences.map { frames in
             frames.map { frame -> NSImage in
                 var input = base
                 input.frame = frame == .rest ? holding : frame

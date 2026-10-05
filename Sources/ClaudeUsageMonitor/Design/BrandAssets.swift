@@ -61,10 +61,16 @@ enum MascotPose: Hashable, Sendable {
         return .front(eyes: eyes, arms: arms, feet: feet)
     }
 
-    static let all: [MascotPose] =
-        Eyes.allCases.flatMap { eyes in
-            Arms.allCases.flatMap { arms in Feet.allCases.map { MascotPose.front(eyes: eyes, arms: arms, feet: $0) } }
-        } + Facing.allCases.map { .turned($0) }
+    static let all: [MascotPose] = {
+        var poses: [MascotPose] = []
+        for eyes in Eyes.allCases {
+            for arms in Arms.allCases {
+                for feet in Feet.allCases { poses.append(.front(eyes: eyes, arms: arms, feet: feet)) }
+            }
+        }
+        for facing in Facing.allCases { poses.append(.turned(facing)) }
+        return poses
+    }()
 }
 
 enum Mascot {
@@ -267,14 +273,14 @@ enum MascotAnimation: String, CaseIterable, Sendable {
     /// 官方入场时随机挑一个（不含 celebrate）
     static let entrances: [MascotAnimation] = [.skip, .jump, .look, .spin, .peekaboo, .drop, .waddle, .peek, .wink, .boop, .tap, .sneeze, .turn, .coinHop]
     /// 原地开始的动作：官方点一下 Clawd 时从这些里随机挑
-    static let inPlace = entrances.filter { ($0.frames.first?.x ?? 0) == 0 }
+    static let inPlace: [MascotAnimation] = entrances.filter { animation in animation.frames.first?.x == 0 }
 
     /// 自动播放时的待机：站一会儿，往右看，再往左看
-    static let idleLoop = hold(.idle, 12) + hold(.lookRight, 5) + hold(.lookLeft, 5)
+    static let idleLoop = chain(hold(.idle, 12), hold(.lookRight, 5), hold(.lookLeft, 5))
 
     /// 眨一下眼，`rest` 是眨完回到的姿态
     static func blink(_ rest: MascotFrame = .rest) -> [MascotFrame] {
-        hold(rest.pose.eyes(.closed), 1) + [rest]
+        chain(hold(rest.pose.eyes(.closed), 1), [rest])
     }
 
     var frames: [MascotFrame] {
@@ -283,53 +289,74 @@ enum MascotAnimation: String, CaseIterable, Sendable {
         case .jump:
             return M.jumping
         case .look:
-            return M.hold(.lookRight, 5) + M.hold(.lookLeft, 5) + M.hold(.idle, 1)
+            return M.chain(M.hold(.lookRight, 5), M.hold(.lookLeft, 5), M.hold(.idle, 1))
         case .celebrate:
-            return M.jumping + M.hold(.idle, 3, offset: 1)
+            return M.chain(M.jumping, M.hold(.idle, 3, offset: 1))
         case .skip:
-            return M.hold(.idle, 1, offset: 1, x: -9)
-                + M.hold(.armsUp, 2, x: -6) + M.hold(.idle, 1, x: -6) + M.hold(.idle, 1, offset: 1, x: -6)
-                + M.hold(.armsUp, 2, x: -3) + M.hold(.idle, 1, x: -3) + M.hold(.idle, 1, offset: 1, x: -3)
-                + M.hold(.armsUp, 2) + M.landing + M.hold(.idle, 1)
+            return M.chain(
+                M.hold(.idle, 1, offset: 1, x: -9),
+                M.hold(.armsUp, 2, x: -6), M.hold(.idle, 1, x: -6), M.hold(.idle, 1, offset: 1, x: -6),
+                M.hold(.armsUp, 2, x: -3), M.hold(.idle, 1, x: -3), M.hold(.idle, 1, offset: 1, x: -3),
+                M.hold(.armsUp, 2), M.landing, M.hold(.idle, 1)
+            )
         case .spin:
-            return M.hold(.lookLeft, 2) + M.hold(.lookRight, 2) + M.hold(.lookLeft, 2) + M.hold(.armsUp, 3) + M.hold(.idle, 1)
+            return M.chain(M.hold(.lookLeft, 2), M.hold(.lookRight, 2), M.hold(.lookLeft, 2), M.hold(.armsUp, 3), M.hold(.idle, 1))
         case .peekaboo:
-            return M.hold(.idle, 1, offset: 3) + M.hold(.idle, 3, offset: 2)
-                + M.hold(.lookRight, 3, offset: 2) + M.hold(.lookLeft, 3, offset: 2)
-                + M.hold(.idle, 2, offset: 2) + M.hold(.idle, 1, offset: 1)
-                + M.hold(.armsUp, 4) + M.hold(.idle, 2) + M.blink()
+            return M.chain(
+                M.hold(.idle, 1, offset: 3), M.hold(.idle, 3, offset: 2),
+                M.hold(.lookRight, 3, offset: 2), M.hold(.lookLeft, 3, offset: 2),
+                M.hold(.idle, 2, offset: 2), M.hold(.idle, 1, offset: 1),
+                M.hold(.armsUp, 4), M.hold(.idle, 2), M.blink()
+            )
         case .drop:
-            return M.hold(.armsUp, 1, offset: -3) + M.hold(.armsUp, 2, offset: -2) + M.hold(.armsUp, 2, offset: -1)
-                + M.hold(.armsUp, 1) + M.landing + M.hold(.idle, 3) + M.blink()
+            return M.chain(
+                M.hold(.armsUp, 1, offset: -3), M.hold(.armsUp, 2, offset: -2), M.hold(.armsUp, 2, offset: -1),
+                M.hold(.armsUp, 1), M.landing, M.hold(.idle, 3), M.blink()
+            )
         case .waddle:
-            return M.hold(.lookRight, 1, x: -9)
-                + [-6, -5, -4, -3, -2, -1].flatMap { M.hold(.front(eyes: .right, feet: $0 % 2 == 0 ? .left : .right), 2, x: $0) }
-                + M.hold(.lookRight, 2) + M.hold(.idle, 2) + M.blink()
+            // 一边走一边换脚
+            let steps: [MascotFrame] = [-6, -5, -4, -3, -2, -1].flatMap { (x: Int) -> [MascotFrame] in
+                let feet: MascotPose.Feet = x % 2 == 0 ? .left : .right
+                return M.hold(.front(eyes: .right, feet: feet), 2, x: x)
+            }
+            return M.chain(M.hold(.lookRight, 1, x: -9), steps, M.hold(.lookRight, 2), M.hold(.idle, 2), M.blink())
         case .peek:
-            return M.hold(.lookRight, 1, x: -9) + M.hold(.lookRight, 5, x: -6) + M.hold(.lookRight, 3, x: -9)
-                + M.hold(.lookRight, 4, x: -5) + M.hold(.armsUp, 2, x: -3) + M.hold(.armsUp, 2) + M.landing + [.rest]
+            return M.chain(
+                M.hold(.lookRight, 1, x: -9), M.hold(.lookRight, 5, x: -6), M.hold(.lookRight, 3, x: -9),
+                M.hold(.lookRight, 4, x: -5), M.hold(.armsUp, 2, x: -3), M.hold(.armsUp, 2), M.landing, [.rest]
+            )
         case .wink:
-            return M.hold(.front(eyes: .wink), 5) + [.rest]
+            return M.chain(M.hold(.front(eyes: .wink), 5), [.rest])
         case .boop:
-            return M.hold(.front(eyes: .closed), 1, offset: 1, poof: .dot) + M.hold(.front(eyes: .closed), 2, offset: 1, poof: .wave)
-                + M.hold(.lookLeft, 4) + M.hold(.idle, 2) + M.blink()
+            return M.chain(
+                M.hold(.front(eyes: .closed), 1, offset: 1, poof: .dot), M.hold(.front(eyes: .closed), 2, offset: 1, poof: .wave),
+                M.hold(.lookLeft, 4), M.hold(.idle, 2), M.blink()
+            )
         case .tap:
             let left = MascotPose.front(feet: .left), right = MascotPose.front(feet: .right)
-            return M.hold(left, 2) + M.hold(right, 2) + M.hold(left, 2) + M.hold(right, 2) + M.hold(left, 1) + M.hold(right, 1)
-                + M.hold(.armsUp, 3) + [.rest]
+            return M.chain(
+                M.hold(left, 2), M.hold(right, 2), M.hold(left, 2), M.hold(right, 2), M.hold(left, 1), M.hold(right, 1),
+                M.hold(.armsUp, 3), [.rest]
+            )
         case .sneeze:
-            return M.hold(.front(eyes: .closed, arms: .up), 4) + M.hold(.front(eyes: .closed), 2, offset: 1, poof: .wave)
-                + M.hold(.front(eyes: .closed), 2) + M.hold(.idle, 2) + M.blink()
+            return M.chain(
+                M.hold(.front(eyes: .closed, arms: .up), 4), M.hold(.front(eyes: .closed), 2, offset: 1, poof: .wave),
+                M.hold(.front(eyes: .closed), 2), M.hold(.idle, 2), M.blink()
+            )
         case .turn:
-            return M.turning([.right12, .right30, .right55, .right75, .edge])
-                + M.turning([.back105, .back125, .back150, .back, .back])
-                + M.turning([.back150, .back125, .back105, .edge])
-                + M.turning([.left75, .left55, .left30, .left12]) + [.rest]
+            return M.chain(
+                M.turning([.right12, .right30, .right55, .right75, .edge]),
+                M.turning([.back105, .back125, .back150, .back, .back]),
+                M.turning([.back150, .back125, .back105, .edge]),
+                M.turning([.left75, .left55, .left30, .left12]), [.rest]
+            )
         case .coinHop:
-            return M.hold(.idle, 2, offset: 1) + M.hold(.armsUp, 1, shadow: .wide)
-                + M.turning([.right55, .edge, .back125, .back], shadow: .narrow)
-                + M.turning([.back125, .edge, .left55], shadow: .narrow)
-                + M.hold(.armsUp, 1, shadow: .wide) + M.landing + [.rest]
+            return M.chain(
+                M.hold(.idle, 2, offset: 1), M.hold(.armsUp, 1, shadow: .wide),
+                M.turning([.right55, .edge, .back125, .back], shadow: .narrow),
+                M.turning([.back125, .edge, .left55], shadow: .narrow),
+                M.hold(.armsUp, 1, shadow: .wide), M.landing, [.rest]
+            )
         }
     }
 
@@ -339,7 +366,12 @@ enum MascotAnimation: String, CaseIterable, Sendable {
         MascotFrame(pose: .idle, offset: 1, poof: .wave),
     ]
 
-    private static let jumping = landing + hold(.armsUp, 3) + hold(.idle, 1) + landing + hold(.armsUp, 3) + hold(.idle, 1)
+    private static let jumping = chain(landing, hold(.armsUp, 3), hold(.idle, 1), landing, hold(.armsUp, 3), hold(.idle, 1))
+
+    /// 把几段帧按顺序接起来（不用一长串 `+`：旧版编译器推断不出类型）
+    private static func chain(_ parts: [MascotFrame]...) -> [MascotFrame] {
+        parts.flatMap { $0 }
+    }
 
     private static func hold(
         _ pose: MascotPose, _ count: Int, offset: Int = 0, x: Int = 0,

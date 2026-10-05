@@ -149,10 +149,10 @@ final class MascotAnimator {
 
     private func play(_ animation: MascotAnimation) {
         lastAnimation = animation
-        play(animation.frames)
+        run(animation.frames)
     }
 
-    private func play(_ frames: [MascotFrame]) {
+    private func run(_ frames: [MascotFrame]) {
         queue = frames[...]
         advance()
     }
@@ -193,17 +193,16 @@ final class MascotAnimator {
     }
 
     private func blink() {
-        play(MascotAnimation.blink(restFrame))
+        run(MascotAnimation.blink(restFrame))
     }
 
     /// 只动眼睛的张望：手里的盾牌不放下
     private func glance() {
         let pose = restFrame.pose
-        play(
-            Array(repeating: MascotFrame(pose: pose.eyes(.right)), count: 5)
-                + Array(repeating: MascotFrame(pose: pose.eyes(.left)), count: 5)
-                + [restFrame]
-        )
+        var frames = Array(repeating: MascotFrame(pose: pose.eyes(.right)), count: 5)
+        frames += Array(repeating: MascotFrame(pose: pose.eyes(.left)), count: 5)
+        frames.append(restFrame)
+        run(frames)
     }
 
     /// 随机挑一个，不连着做同一个

@@ -80,7 +80,11 @@ enum StatusIconRenderer {
         static func path(holes: [(Int, Int)] = []) -> CGPath {
             let path = CGMutablePath()
             for (y, row) in pixels.enumerated() {
-                let filled = row.enumerated().map { x, ch in ch == "#" && !holes.contains { $0 == (x, y) } }
+                var filled: [Bool] = []
+                for (x, ch) in row.enumerated() {
+                    let isHole = holes.contains { hole in hole.0 == x && hole.1 == y }
+                    filled.append(ch == "#" && !isHole)
+                }
                 var x = 0
                 while x < filled.count {
                     guard filled[x] else { x += 1; continue }
@@ -324,9 +328,10 @@ enum StatusIconRenderer {
         // 尘土、影子在最下面一行，官方用灰色。尘土那两格盖住原来的内容（蹲下时的手）。
         let ground = box.minY + 2 * cell.height
         let dim = color.withAlphaComponent(0.5)
-        let poofCells = (frame.poof != nil && frame.offset > 0)
-            ? [0, 8].map { CGRect(x: box.minX + CGFloat($0) * cell.width, y: ground, width: cell.width, height: cell.height) }
-            : []
+        var poofCells: [CGRect] = []
+        if frame.poof != nil, frame.offset > 0 {
+            poofCells = [0, 8].map { CGRect(x: box.minX + CGFloat($0) * cell.width, y: ground, width: cell.width, height: cell.height) }
+        }
 
         ctx.saveGState()
         ctx.addRect(box)

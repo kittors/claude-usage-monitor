@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-05
+
+### Added
+
+- The 5-hour and weekly bars show a safe line: how much can be used by now and still last until the reset. The 5-hour line follows the time that has passed. The weekly line counts the week in days from the weekly reset and allows one seventh more each day. Usage past the line turns red, except in the first half hour of a 5-hour window.
+- Point at a bar to see the safe line's percentage and how much is left before it, or how far past it you are.
+- Spend shows a projected total for the period at the current pace, next to the amount.
+
+### Changed
+
+- The daily average counts the time that has passed instead of whole days, so the average times the days in the period equals the projected total.
+- Model shares add up to exactly 100% and model amounts add up to the period total, with one precision throughout: 99.8% and 0.2% instead of 100% and 0.2%.
+- Switching between This month, This week and Today slides the selection and rolls every number in one motion, and the chart brightens the days in the selected period.
+- The system tooltip with the reset time moved to the title and reset lines of each limit, so it no longer appears on top of the safe line label.
+
 ## [1.3.0] - 2026-10-05
 
 ### Added

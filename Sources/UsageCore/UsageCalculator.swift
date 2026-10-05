@@ -80,8 +80,25 @@ public struct PeriodUsage: Sendable, Equatable {
 
     /// 周期最后一天（含）
     public var lastDay: Date { end.addingTimeInterval(-1) }
-    /// 到今天为止的日均费用
-    public var dailyAverage: Double { cost / Double(max(1, dayIndex)) }
+
+    /// 到现在为止的日均费用：按实际过去的时间算，不足一天按一天算（刚开始时几分钟的消耗不会被放大）
+    public func dailyAverage(now: Date) -> Double {
+        cost / (elapsed(now: now, atLeast: 86_400) / 86_400)
+    }
+
+    /// 照现在的速度，整个周期一共会用多少。多天的周期就是日均 × 天数，和面板上的日均对得上；
+    /// 只有一天时按小时外推，开头不足 6 小时按 6 小时算。
+    public func projectedCost(now: Date) -> Double {
+        guard dayCount == 1 else { return dailyAverage(now: now) * Double(dayCount) }
+        let length = end.timeIntervalSince(start)
+        return cost * length / elapsed(now: now, atLeast: 6 * 3600)
+    }
+
+    /// 周期已经过去的时间，至少按 `minimum` 算，最多到周期结束
+    private func elapsed(now: Date, atLeast minimum: TimeInterval) -> TimeInterval {
+        let length = max(1, end.timeIntervalSince(start))
+        return min(length, max(min(minimum, length), now.timeIntervalSince(start)))
+    }
 }
 
 /// 本机用量（Claude Code 会话日志按 API 价格折算）。限额百分比只来自官方接口，不在这里推算。

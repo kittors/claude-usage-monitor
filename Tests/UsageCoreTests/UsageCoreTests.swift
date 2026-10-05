@@ -258,7 +258,8 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(snap.billing.requests == 3)
     #expect(abs(snap.billing.cost - 60) < 1e-9)
     #expect(snap.billing.dayIndex == 28)
-    #expect(abs(snap.billing.dailyAverage - 60.0 / 28) < 1e-9)
+    // 9 月 1 日零点到 28 日中午过去 27.5 天
+    #expect(abs(snap.billing.dailyAverage(now: now) - 60.0 / 27.5) < 1e-9)
     #expect(abs((snap.today?.cost ?? 0) - 40) < 1e-9)
     #expect(snap.daily.count == 30)
 }

@@ -33,6 +33,13 @@ public enum Fmt {
         return String(format: "%.\(digits)f%%", fraction * 100)
     }
 
+    /// 一组占比，加起来正好 100%。都是整数时不带小数，否则统一保留一位：99.8% / 0.2%，而不是 100% / 0.2%。
+    public static func shares(_ weights: [Double]) -> [String] {
+        let tenths = Apportion.largestRemainder(weights, total: 1000)
+        if tenths.allSatisfy({ $0 % 10 == 0 }) { return tenths.map { "\($0 / 10)%" } }
+        return tenths.map { "\($0 / 10).\($0 % 10)%" }
+    }
+
     /// 界面语言。应用启动后按系统语言或用户选择改写；测试保持中文。
     public static var localizedChinese = true
 
@@ -173,14 +180,30 @@ public struct MoneyFormat: Sendable, Equatable {
 
     /// 仅数字部分
     public func number(_ value: Double) -> String {
+        Self.number(value, digits: unit.fractionDigits == 0 ? 0 : (abs(value) >= 10_000 ? 0 : 2))
+    }
+
+    /// `string(_:)` 显示这笔金额时用几位小数
+    public func fractionDigits(for usd: Double) -> Int {
+        unit.fractionDigits == 0 ? 0 : (abs(convert(usd)) >= 10_000 ? 0 : 2)
+    }
+
+    /// 把总额按各部分的比例拆开显示：每一项都用总额的小数位，加起来正好等于 `string(total)` 显示的数（最大余数法）
+    public func split(_ total: Double, into parts: [Double]) -> [String] {
+        let digits = fractionDigits(for: total)
+        let scale = pow(10, Double(digits))
+        let units = Int((convert(total) * scale).rounded())
+        return Apportion.rounded(parts.map { convert($0) * scale }, total: units).map { symbol + Self.number(Double($0) / scale, digits: digits) }
+    }
+
+    private static func number(_ value: Double, digits: Int) -> String {
         let f = NumberFormatter()
         f.numberStyle = .decimal
         f.groupingSeparator = ","
         f.usesGroupingSeparator = true
-        let digits = unit.fractionDigits == 0 ? 0 : (abs(value) >= 10_000 ? 0 : 2)
         f.minimumFractionDigits = digits
         f.maximumFractionDigits = digits
-        return f.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+        return f.string(from: NSNumber(value: value)) ?? String(format: "%.\(digits)f", value)
     }
 
     /// 紧凑：`$1.7k`

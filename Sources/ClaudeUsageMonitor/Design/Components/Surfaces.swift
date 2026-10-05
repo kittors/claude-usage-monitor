@@ -119,13 +119,19 @@ extension EnvironmentValues {
 struct GrowingValue: ViewModifier {
     let target: Double
     var delay: Double = 0
+    /// 变化不超过它时直接跟上、不做动画（例如随时间一点点前进的安全线）
+    var animatesAbove: Double = 0
     @Binding var shown: Double
 
     func body(content: Content) -> some View {
         content
             .onAppear { shown = target }
-            .onChange(of: target) { _, _ in
-                withAnimation(.settle) { shown = target }
+            .onChange(of: target) { old, new in
+                if abs(new - old) <= animatesAbove {
+                    shown = new
+                } else {
+                    withAnimation(.settle) { shown = new }
+                }
             }
     }
 }

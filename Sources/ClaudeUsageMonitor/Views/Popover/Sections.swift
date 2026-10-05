@@ -113,28 +113,35 @@ private struct LimitRowView: View {
 
     var body: some View {
         let color = Palette.level(row.fraction)
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(row.title)
-                    .font(.rowLabel)
-                    .foregroundStyle(Palette.text)
-                Spacer()
-                if let rise {
-                    Text("+\(rise)%")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(color.opacity(0.8))
+        // 每秒刷新：倒计时、随时间前进的安全线和悬停说明用同一个时刻
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let line = row.paceLine(now: context.date)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(row.title)
+                        .font(.rowLabel)
+                        .foregroundStyle(Palette.text)
+                    Spacer()
+                    if let rise {
+                        Text("+\(rise)%")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(color.opacity(0.8))
+                            .monospacedDigit()
+                            .transition(.opacity.combined(with: .offset(y: 4)))
+                    }
+                    Text("\(row.percent)%")
+                        .font(.rowValue)
+                        .foregroundStyle(color)
                         .monospacedDigit()
-                        .transition(.opacity.combined(with: .offset(y: 4)))
+                        .contentTransition(.numericText(value: row.fraction))
                 }
-                Text("\(row.percent)%")
-                    .font(.rowValue)
-                    .foregroundStyle(color)
-                    .monospacedDigit()
-                    .contentTransition(.numericText(value: row.fraction))
-            }
-            ThinBar(fraction: row.fraction, color: color)
-            if row.reset != .none {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
+                .contentShape(Rectangle())
+                .help(help(line))
+                ThinBar(
+                    fraction: row.fraction, color: color,
+                    mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false, markLabel: markLabel(line)
+                )
+                if row.reset != .none {
                     let caption = resetCaption(now: context.date)
                     HStack(spacing: 8) {
                         Text(caption.text)
@@ -144,14 +151,14 @@ private struct LimitRowView: View {
                                 .foregroundStyle(Palette.secondary)
                         }
                     }
+                    .font(.caption)
+                    .foregroundStyle(Palette.tertiary)
+                    .monospacedDigit()
+                    .contentShape(Rectangle())
+                    .help(help(line))
                 }
-                .font(.caption)
-                .foregroundStyle(Palette.tertiary)
-                .monospacedDigit()
             }
         }
-        .contentShape(Rectangle())
-        .help(row.resetsAt.map { L10n.t("重置时间：\(LimitsSection.fullDate($0))（\(LimitsSection.zoneName)）", "Resets \(LimitsSection.fullDate($0)) (\(LimitsSection.zoneName))") } ?? "")
         .onChange(of: row.percent) { old, new in
             guard new > old else { return }
             withAnimation(.easeOut(duration: 0.25)) { rise = new - old }
@@ -163,6 +170,56 @@ private struct LimitRowView: View {
             guard !Task.isCancelled else { return }
             withAnimation(.easeIn(duration: 0.4)) { rise = nil }
         }
+    }
+
+    /// 指针停在进度条上时，安全线上方的标签：安全线是多少，还能用多少或超了多少
+    private func markLabel(_ line: LimitPace.Line?) -> BarMarkLabel? {
+        guard let line else { return nil }
+        let value = L10n.t("安全线 \(Self.percent(line.fraction))", "Safe line \(Self.percent(line.fraction))")
+        if line.isExceeded(by: row.fraction) {
+            let over = Self.percent(row.fraction - line.fraction)
+            return BarMarkLabel(value: value, detail: L10n.t("超出 \(over)", "\(over) over"), alert: true)
+        }
+        if row.fraction > line.fraction {
+            return BarMarkLabel(value: value, detail: L10n.t("窗口刚开始", "Just started"))
+        }
+        let left = Self.percent(line.fraction - row.fraction)
+        return BarMarkLabel(value: value, detail: L10n.t("还可用 \(left)", "\(left) left"))
+    }
+
+    /// 保留一位小数，正好是整数时不带：28.6%、50%
+    private static func percent(_ fraction: Double) -> String {
+        let tenths = (fraction * 1000).rounded()
+        return tenths.truncatingRemainder(dividingBy: 10) == 0 ? "\(Int(tenths / 10))%" : String(format: "%.1f%%", tenths / 10)
+    }
+
+    /// 悬停说明：什么时候重置，安全线在哪、怎么来的，超了多少
+    private func help(_ line: LimitPace.Line?) -> String {
+        var parts: [String] = []
+        if let reset = row.resetsAt {
+            parts.append(L10n.t("重置时间：\(LimitsSection.fullDate(reset))（\(LimitsSection.zoneName)）", "Resets \(LimitsSection.fullDate(reset)) (\(LimitsSection.zoneName))"))
+        }
+        guard let line else { return parts.joined(separator: "\n") }
+        let mark = Self.percent(line.fraction)
+        if let day = line.day {
+            parts.append(L10n.t(
+                "安全线 \(mark)：今天是这一周的第 \(day) 天，今天结束前用到 \(day)/7 都不会提前用完",
+                "Safe line \(mark): day \(day) of 7, so staying under \(day)/7 by the end of today lasts the week"
+            ))
+        } else {
+            let elapsed = Fmt.countdown(line.elapsed, showSeconds: false)
+            parts.append(L10n.t(
+                "安全线 \(mark)：5 小时已过 \(elapsed)，用量不超过这个比例就能撑到重置",
+                "Safe line \(mark): \(elapsed) of the 5 hours have passed, so staying under this share lasts until the reset"
+            ))
+        }
+        if line.isExceeded(by: row.fraction) {
+            let over = Self.percent(row.fraction - line.fraction)
+            parts.append(L10n.t("已超出 \(over)，照这个速度会在重置前用完", "\(over) over the line. At this pace the limit runs out before the reset"))
+        } else if line.settling, row.fraction > line.fraction {
+            parts.append(L10n.t("窗口刚开始，先不提示超线", "The window just started, so going over is not flagged yet"))
+        }
+        return parts.joined(separator: "\n")
     }
 
     /// 左边是什么时候重置，右边（打开倒计时时）是还剩多久，精确到秒
@@ -306,7 +363,11 @@ private struct SpanTabs: View {
                         }
                     }
                     .contentShape(Rectangle())
-                    .onTapGesture { withAnimation(.quiet) { selection = span } }
+                    .onTapGesture {
+                        guard span != selection else { return }
+                        // 选中块滑过去，下面的数字、柱状图、模型行一起过渡
+                        withAnimation(.disclosure) { selection = span }
+                    }
             }
         }
         .padding(2)
@@ -345,6 +406,7 @@ struct CycleSection: View {
                     .foregroundStyle(Palette.tertiary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
+                    .contentTransition(.numericText())
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             SpanTabs(selection: $prefs.costSpan)
@@ -358,47 +420,11 @@ struct CycleSection: View {
     private func cycleBody(_ billing: PeriodUsage, money: MoneyFormat, recent: [DayUsage]) -> some View {
         let tokens = billing.tokens
         let costs = CategoryCosts(models: billing.models)
-        let summary = prefs.costSpan == .day
-            ? L10n.t("当天", "Today")
-            : L10n.t("第 \(billing.dayIndex) / \(billing.dayCount) 天 · 日均 \(money.whole(billing.dailyAverage))", "Day \(billing.dayIndex) of \(billing.dayCount) · \(money.whole(billing.dailyAverage))/day")
 
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .bottom, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(money.string(billing.cost))
-                        .font(.system(size: 26, weight: .semibold))
-                        .tracking(-0.4)
-                        .foregroundStyle(Palette.text)
-                        .monospacedDigit()
-                        .contentTransition(.numericText(value: money.convert(billing.cost)))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .onTapGesture {
-                            let all = MoneyFormat.Unit.allCases
-                            let index = all.firstIndex(of: prefs.currency) ?? 0
-                            withAnimation(.quiet) { prefs.currency = all[(index + 1) % all.count] }
-                        }
-                        .help(L10n.t("点击切换货币", "Click to change currency"))
-                    Group {
-                        if let i = hoveredDay, let day = recent[safe: i] {
-                            Text(L10n.t("\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests)) 次", "\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests))"))
-                        } else {
-                            Text(summary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                                .contentTransition(.numericText())
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(Palette.tertiary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                MiniBars(values: recent.map(\.cost), highlightIndex: recent.count - 1, hovered: $hoveredDay)
-                    .frame(width: 104, height: 30)
-                    .padding(.bottom, 3)
-                    .help(L10n.t("最近 14 天", "Last 14 days"))
+            // 每分钟刷新：日均和预计随时间变化，没有新消耗时也不会停在旧值上
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                header(billing, money: money, recent: recent, now: context.date)
             }
 
             HStack(spacing: 0) {
@@ -439,6 +465,69 @@ struct CycleSection: View {
             if !billing.models.isEmpty {
                 ModelList(models: billing.models, total: billing.cost, money: money)
             }
+        }
+    }
+
+    private func header(_ billing: PeriodUsage, money: MoneyFormat, recent: [DayUsage], now: Date) -> some View {
+        let daily = billing.dailyAverage(now: now)
+        let projected = billing.projectedCost(now: now)
+        let summary = prefs.costSpan == .day
+            ? L10n.t("当天", "Today")
+            : L10n.t("第 \(billing.dayIndex) / \(billing.dayCount) 天 · 日均 \(money.whole(daily))", "Day \(billing.dayIndex) of \(billing.dayCount) · \(money.whole(daily))/day")
+        // 柱状图里属于这个周期的天：和周期有交集的那几根
+        let periodStart = recent.firstIndex { $0.date.addingTimeInterval(86_400) > billing.start }
+
+        return HStack(alignment: .bottom, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text(money.string(billing.cost))
+                        .font(.system(size: 26, weight: .semibold))
+                        .tracking(-0.4)
+                        .foregroundStyle(Palette.text)
+                        .monospacedDigit()
+                        .contentTransition(.numericText(value: money.convert(billing.cost)))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .onTapGesture {
+                            let all = MoneyFormat.Unit.allCases
+                            let index = all.firstIndex(of: prefs.currency) ?? 0
+                            withAnimation(.quiet) { prefs.currency = all[(index + 1) % all.count] }
+                        }
+                        .help(L10n.t("点击切换货币", "Click to change currency"))
+                    if billing.cost > 0 {
+                        Text(L10n.t("预计 \(money.whole(projected))", "→ \(money.whole(projected))"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Palette.tertiary)
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: money.convert(projected)))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .help(prefs.costSpan == .day
+                                ? L10n.t("照今天到现在的速度，今天预计一共 \(money.whole(projected))", "At today's pace so far, about \(money.whole(projected)) today")
+                                : L10n.t("照现在的速度，这个周期预计一共 \(money.whole(projected))（日均 \(money.whole(daily)) × \(billing.dayCount) 天）", "At this pace, about \(money.whole(projected)) for the period (\(money.whole(daily))/day × \(billing.dayCount) days)"))
+                            .transition(.opacity)
+                    }
+                }
+                Group {
+                    if let i = hoveredDay, let day = recent[safe: i] {
+                        Text(L10n.t("\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests)) 次", "\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests))"))
+                    } else {
+                        Text(summary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .contentTransition(.numericText())
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(Palette.tertiary)
+                .monospacedDigit()
+                .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            MiniBars(values: recent.map(\.cost), highlightIndex: recent.count - 1, periodStart: periodStart, hovered: $hoveredDay)
+                .frame(width: 104, height: 30)
+                .padding(.bottom, 3)
+                .help(L10n.t("最近 14 天", "Last 14 days"))
         }
     }
 
@@ -494,43 +583,48 @@ struct CycleSection: View {
     }
 }
 
-/// 本期按模型的费用（最多 3 行，其余合并）
+/// 本期按模型的费用（最多 3 行，其余合并）。占比加起来正好 100%，金额加起来正好是上面的总额。
 private struct ModelList: View {
     let models: [ModelUsage]
     let total: Double
     let money: MoneyFormat
 
+    private struct Entry: Identifiable {
+        let id: String
+        let cost: Double
+        let estimated: Bool
+    }
+
     var body: some View {
         // 最多 3 行：超过 3 个模型时展示前 2 个 + 其他
         let keep = models.count > 3 ? 2 : models.count
-        let top = Array(models.prefix(keep))
+        var entries = models.prefix(keep).map { Entry(id: $0.displayName, cost: $0.cost, estimated: $0.isEstimated) }
         let rest = models.dropFirst(keep).reduce(0) { $0 + $1.cost }
-        VStack(spacing: 5) {
-            ForEach(top) { m in
-                row(m.displayName, m.cost, estimated: m.isEstimated)
-            }
-            if rest > 0.005 {
-                row(L10n.t("其他", "Other"), rest, estimated: false)
+        if rest > 0.005 { entries.append(Entry(id: L10n.t("其他", "Other"), cost: rest, estimated: false)) }
+        let shares = Fmt.shares(entries.map(\.cost))
+        let amounts = money.split(total, into: entries.map(\.cost))
+        return VStack(spacing: 5) {
+            ForEach(Array(entries.enumerated()), id: \.element.id) { i, entry in
+                row(entry, share: shares[i], amount: amounts[i])
             }
         }
     }
 
-    private func row(_ name: String, _ cost: Double, estimated: Bool) -> some View {
-        let share = total > 0 ? cost / total : 0
-        return HStack(spacing: 8) {
-            Text(name)
+    private func row(_ entry: Entry, share: String, amount: String) -> some View {
+        HStack(spacing: 8) {
+            Text(entry.id)
                 .foregroundStyle(Palette.secondary)
-            if estimated {
+            if entry.estimated {
                 Text(L10n.t("估价", "est.")).foregroundStyle(Palette.quaternary)
             }
             Spacer()
-            Text(Fmt.percent(share, digits: share > 0 && share < 0.01 ? 1 : 0))
+            Text(share)
                 .foregroundStyle(Palette.tertiary)
-                .contentTransition(.numericText(value: share))
-                .frame(width: 40, alignment: .trailing)
-            Text(money.whole(cost))
+                .contentTransition(.numericText())
+                .frame(width: 44, alignment: .trailing)
+            Text(amount)
                 .foregroundStyle(Palette.text)
-                .contentTransition(.numericText(value: cost))
+                .contentTransition(.numericText())
                 .frame(minWidth: 64, alignment: .trailing)
         }
         .font(.system(size: 11.5))

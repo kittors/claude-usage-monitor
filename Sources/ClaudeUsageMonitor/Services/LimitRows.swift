@@ -24,6 +24,15 @@ struct LimitRow: Identifiable, Equatable {
     var resetsAt: Date?
 
     var fraction: Double { Double(percent) / 100 }
+
+    /// 安全线：5 小时按时间连续推进，每周按天。窗口已经过去或没有进行中的窗口时为 nil。
+    func paceLine(now: Date) -> LimitPace.Line? {
+        switch reset {
+        case .countdown(let resetsAt): LimitPace.fiveHour(resetsAt: resetsAt, now: now)
+        case .weekday(let resetsAt): LimitPace.weekly(resetsAt: resetsAt, now: now)
+        case .elapsed, .idle, .none: nil
+        }
+    }
 }
 
 extension UsageStore {

@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-05
+
+### Added
+
+- Clawd carries the exit shield in the menu bar, drawn in its own pixel style and color: a cut-out check when the exit is safe, red with an exclamation mark when it is not, three dots while a safe exit is checked again, and all red for a direct IPv6 connection.
+- Clawd keeps moving: it blinks, looks around, hops, walks in, peeks out of the ground, and turns around, with the 15 moves from the Claude Code welcome screen. It hops when new usage arrives and does a move when you click it. On a risky exit it only looks around and hides. It stays still with Reduce Motion, while the display sleeps, and when the menu bar is hidden. **Settings > Display > Clawd animation** turns the moves off.
+
+### Changed
+
+- Clawd follows the new design in Claude Code 2.1.285, in the menu bar, the panel, and the app icon.
+
 ## [1.2.6] - 2026-10-04
 
 ### Changed

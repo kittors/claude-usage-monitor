@@ -201,6 +201,8 @@ final class Preferences {
     }
     var menuBarIcon: MenuBarIcon { didSet { save(menuBarIcon.rawValue, "menuBarIcon") } }
     var menuBarStyle: MenuBarStyle { didSet { save(menuBarStyle.rawValue, "menuBarStyle") } }
+    /// 菜单栏里的 Clawd 不停地活动（动作取自 Claude Code）。默认开启。
+    var menuBarAnimation: Bool { didSet { save(menuBarAnimation, "menuBarAnimation") } }
     /// 菜单栏显示哪些数值（可以多选）。默认只显示 5 小时。
     var menuBarItems: [MenuBarItem] { didSet { save(menuBarItems.map(\.rawValue), "menuBarItems") } }
 
@@ -261,6 +263,7 @@ final class Preferences {
         Localization.shared.apply(language)
         menuBarIcon = MenuBarIcon(rawValue: d.string(forKey: "menuBarIcon") ?? "") ?? .mascot
         menuBarStyle = MenuBarStyle(rawValue: d.string(forKey: "menuBarStyle") ?? "") ?? .iconPercent
+        menuBarAnimation = d.object(forKey: "menuBarAnimation") as? Bool ?? true
         // 以前只能选一个数值：沿用那一个
         let savedItems = (d.stringArray(forKey: "menuBarItems") ?? d.string(forKey: "menuBarMetric").map { [$0] } ?? [])
             .compactMap(MenuBarItem.init(rawValue:))

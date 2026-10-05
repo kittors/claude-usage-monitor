@@ -27,8 +27,9 @@ enum StatusIconRenderer {
         var secondary: Double
         /// 图标和数值的颜色。没有官方用量时为 nil。
         var fraction: Double?
-        var pose: MascotPose = .idle
-        /// 数值右侧的出口盾牌
+        /// Clawd 当前这一帧
+        var frame: MascotFrame = .rest
+        /// 出口盾牌：Clawd 拿在手里；Claude 标志或圆环时放在数值右侧
         var showsSafety: Bool = false
         var exitSafe: Bool = false
         /// IPv6 直连。比普通不安全更重，盾牌用实心警示。
@@ -38,6 +39,58 @@ enum StatusIconRenderer {
         var shieldPhase: CGFloat = 0
         /// 菜单栏是深色时，无用量的图标用白色
         var onDarkMenuBar: Bool = true
+
+        /// 画的是 Clawd（圆环样式时换成圆环）
+        var showsMascot: Bool { icon == .mascot && style != .ringPercent }
+        /// 盾牌拿在 Clawd 手里
+        var shieldInHand: Bool { showsSafety && showsMascot }
+    }
+
+    /// Clawd 的画框（官方 9×3 个字符）：菜单栏里一个象限像素 1pt 宽、2pt 高。
+    /// 最左一列象限像素在任何姿态里都是空的，所以画框从 x = -1 开始，看得见的部分 17pt 宽。
+    private static let mascotUnit = CGSize(width: 1, height: 2)
+    private static let mascotBox = CGRect(
+        x: -1, y: 4,
+        width: CGFloat(Mascot.frameColumns) * mascotUnit.width,
+        height: CGFloat(Mascot.frameRows) * mascotUnit.height
+    )
+
+    /// 拿在 Clawd 手里的盾牌：和 Clawd 同一套像素画（1pt 一个像素），勾和叹号像 Clawd 的眼睛一样是镂空的。
+    /// 紧贴身体右侧、挡住右臂，和身体之间留 1pt 缝。安全时和 Clawd 同色；不安全、正在确认时变红；IPv6 直连时连 Clawd 一起变红。
+    private enum HeldShield {
+        static let origin = CGPoint(x: 16, y: 5)
+        static let gap: CGFloat = 1
+        static let pixels = [
+            "#######",
+            "#######",
+            "#######",
+            "#######",
+            "#######",
+            ".#####.",
+            "..###..",
+            "...#...",
+        ]
+        static let check = [(5, 1), (4, 2), (1, 3), (3, 3), (2, 4)]
+        static let alert = [(3, 1), (3, 2), (3, 4)]
+        /// 确认中依次亮起的三个点
+        static let dots = [(1, 3), (3, 3), (5, 3)]
+        static var width: CGFloat { CGFloat(pixels[0].count) }
+
+        /// 镂空掉 `holes` 之后的盾牌，每行连续的像素合成一个矩形
+        static func path(holes: [(Int, Int)] = []) -> CGPath {
+            let path = CGMutablePath()
+            for (y, row) in pixels.enumerated() {
+                let filled = row.enumerated().map { x, ch in ch == "#" && !holes.contains { $0 == (x, y) } }
+                var x = 0
+                while x < filled.count {
+                    guard filled[x] else { x += 1; continue }
+                    let start = x
+                    while x < filled.count, filled[x] { x += 1 }
+                    path.addRect(CGRect(x: origin.x + CGFloat(start), y: origin.y + CGFloat(y), width: CGFloat(x - start), height: 1))
+                }
+            }
+            return path
+        }
     }
 
     static func image(_ input: Input) -> NSImage {
@@ -58,13 +111,13 @@ enum StatusIconRenderer {
         let columns = stacked ? input.values.map { Column($0, input: input) } : []
         let columnGap: CGFloat = 7
 
-        let iconWidth: CGFloat = 16
+        let iconWidth: CGFloat = input.showsMascot ? (input.shieldInHand ? HeldShield.origin.x + HeldShield.width : mascotBox.maxX) : 16
         let shield: CGFloat = 13
         var width = iconWidth
         if text != nil { width += 4 + ceil(textSize.width) }
         if !columns.isEmpty { width += 5 + columns.reduce(0) { $0 + $1.width } + columnGap * CGFloat(columns.count - 1) }
         if input.style == .dualBars { width += 5 + 18 }
-        if input.showsSafety { width += 4 + shield }
+        if input.showsSafety, !input.shieldInHand { width += 4 + shield }
 
         let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
@@ -72,8 +125,12 @@ enum StatusIconRenderer {
             ctx.translateBy(x: 0, y: top)
             if input.style == .ringPercent {
                 drawRing(ctx, in: CGRect(x: 0, y: 1, width: 16, height: 16), fraction: input.primary, color: markColor(input.primary, input: input, fallback: glyph))
+            } else if input.icon == .logo {
+                drawLogo(ctx, color: glyph)
+            } else if input.shieldInHand {
+                drawMascotWithShield(ctx, input, color: glyph)
             } else {
-                drawIcon(ctx, input.icon, pose: input.pose, color: glyph)
+                drawMascot(ctx, input.frame, color: glyph)
             }
             ctx.restoreGState()
 
@@ -97,7 +154,7 @@ enum StatusIconRenderer {
                 drawBar(ctx, CGRect(x: x, y: top + 10, width: 18, height: 3), fraction: input.secondary, color: markColor(input.secondary, input: input, fallback: glyph))
                 cursor = x + 18
             }
-            if input.showsSafety {
+            if input.showsSafety, !input.shieldInHand {
                 drawShield(
                     ctx,
                     in: CGRect(x: cursor + 4, y: (height - shield) / 2, width: shield, height: shield),
@@ -217,19 +274,100 @@ enum StatusIconRenderer {
         }
     }
 
-    private static func drawIcon(_ ctx: CGContext, _ icon: MenuBarIcon, pose: MascotPose, color: NSColor) {
-        ctx.setFillColor(color.cgColor)
-        switch icon {
-        case .mascot:
-            // 1pt × 2pt 的整数像素，Retina 下边缘锐利
-            let path = Mascot.path(pose, in: CGRect(x: 0, y: 4, width: 16, height: 10), pixelAspect: 2)
-            ctx.addPath(path.cgPath)
-        case .logo:
-            let rect = CGRect(x: 0.5, y: 1.5, width: 15, height: 15)
-            let path = SVGShape(path: ClaudeBrand.logoPath, viewBox: ClaudeBrand.logoViewBox).path(in: rect)
-            ctx.addPath(path.cgPath)
+    private static func drawMascotWithShield(_ ctx: CGContext, _ input: Input, color: NSColor) {
+        let rgb = UsageTone.critical.components
+        let red = NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+        let alarmed = input.shieldLoading || input.ipv6Direct || !input.exitSafe
+        let holes: [(Int, Int)]
+        if input.shieldLoading {
+            let lit = Int(input.shieldPhase / (.pi * 2) * 4) % 4
+            holes = Array(HeldShield.dots.prefix(lit))
+        } else {
+            holes = alarmed ? HeldShield.alert : HeldShield.check
         }
+        // 在透明图层里画：让出缝隙只擦掉 Clawd，不会擦到菜单栏
+        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+        drawMascot(ctx, input.frame, color: input.ipv6Direct ? red : color)
+        ctx.saveGState()
+        ctx.setBlendMode(.clear)
+        ctx.addPath(HeldShield.path())
+        ctx.setLineWidth(HeldShield.gap * 2)
+        ctx.setLineJoin(.miter)
+        ctx.drawPath(using: .fillStroke)
+        ctx.restoreGState()
+        ctx.addPath(HeldShield.path(holes: holes))
+        ctx.setFillColor((alarmed ? red : color).cgColor)
         ctx.fillPath()
+        ctx.endTransparencyLayer()
+    }
+
+    private static func drawLogo(_ ctx: CGContext, color: NSColor) {
+        let rect = CGRect(x: 0.5, y: 1.5, width: 15, height: 15)
+        let path = SVGShape(path: ClaudeBrand.logoPath, viewBox: ClaudeBrand.logoViewBox).path(in: rect)
+        ctx.addPath(path.cgPath)
+        ctx.setFillColor(color.cgColor)
+        ctx.fillPath()
+    }
+
+    /// 这一帧 Clawd 的像素（已按位移摆好，未裁切）
+    private static func mascotPath(_ frame: MascotFrame) -> CGPath {
+        let box = mascotBox, unit = mascotUnit
+        let origin = CGPoint(x: box.minX + CGFloat(frame.x) * 2 * unit.width, y: box.minY + CGFloat(frame.offset) * 2 * unit.height)
+        return Mascot.path(frame.pose, origin: origin, unit: unit).cgPath
+    }
+
+    /// Clawd 只在画框里看得见：往下沉时被地面挡住，从左边走进来时被左缘挡住，从上方落下时被画框顶部挡住。
+    /// 1pt × 2pt 的整数像素，Retina 下边缘锐利。
+    private static func drawMascot(_ ctx: CGContext, _ frame: MascotFrame, color: NSColor) {
+        let box = mascotBox, unit = mascotUnit
+        let cell = CGSize(width: 2 * unit.width, height: 2 * unit.height)
+        // 尘土、影子在最下面一行，官方用灰色。尘土那两格盖住原来的内容（蹲下时的手）。
+        let ground = box.minY + 2 * cell.height
+        let dim = color.withAlphaComponent(0.5)
+        let poofCells = (frame.poof != nil && frame.offset > 0)
+            ? [0, 8].map { CGRect(x: box.minX + CGFloat($0) * cell.width, y: ground, width: cell.width, height: cell.height) }
+            : []
+
+        ctx.saveGState()
+        ctx.addRect(box)
+        poofCells.forEach { ctx.addRect($0) }
+        ctx.clip(using: .evenOdd)
+        ctx.addPath(mascotPath(frame))
+        ctx.setFillColor(color.cgColor)
+        ctx.fillPath()
+        ctx.restoreGState()
+
+        if let poof = frame.poof {
+            for cell in poofCells {
+                // 画框比看得见的部分往左多一列空像素：尘土跟着 Clawd 的中线往右挪半格
+                drawPoof(ctx, poof, at: CGPoint(x: cell.midX + 0.5, y: cell.midY), color: dim)
+            }
+        }
+        if let shadow = frame.shadow {
+            let (column, count) = shadow == .wide ? (3, 3) : (4, 1)
+            ctx.setFillColor(dim.cgColor)
+            ctx.fill(CGRect(
+                x: box.minX + CGFloat(column) * cell.width, y: box.maxY - cell.height / 8,
+                width: CGFloat(count) * cell.width, height: cell.height / 8
+            ))
+        }
+    }
+
+    /// 「·」是一个点，「~」是一小段波浪
+    private static func drawPoof(_ ctx: CGContext, _ poof: MascotFrame.Poof, at center: CGPoint, color: NSColor) {
+        switch poof {
+        case .dot:
+            ctx.setFillColor(color.cgColor)
+            ctx.fill(CGRect(x: center.x - 0.5, y: center.y - 0.5, width: 1, height: 1))
+        case .wave:
+            ctx.setStrokeColor(color.cgColor)
+            ctx.setLineWidth(0.8)
+            ctx.setLineCap(.round)
+            ctx.move(to: CGPoint(x: center.x - 1.1, y: center.y + 0.2))
+            ctx.addQuadCurve(to: center, control: CGPoint(x: center.x - 0.55, y: center.y - 0.9))
+            ctx.addQuadCurve(to: CGPoint(x: center.x + 1.1, y: center.y - 0.2), control: CGPoint(x: center.x + 0.55, y: center.y + 0.9))
+            ctx.strokePath()
+        }
     }
 
     private static func markColor(_ fraction: Double, input: Input, fallback: NSColor) -> NSColor {

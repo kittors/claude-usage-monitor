@@ -50,32 +50,46 @@ enum AssetExporter {
             Value(label: "WEEK", text: "98%", fraction: 0.98),
             Value(label: "FABLE", text: "0%", fraction: 0),
         ]
+        typealias Input = StatusIconRenderer.Input
+        let holding = MascotFrame(pose: .front(arms: .oneUp))
+        func shield(_ name: String, safe: Bool = false, severe: Bool = false, loading: Bool = false, dark: Bool) -> (String, Input) {
+            (name, Input(
+                icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71, frame: holding,
+                showsSafety: true, exitSafe: safe, ipv6Direct: severe, shieldLoading: loading, shieldPhase: .pi / 3, onDarkMenuBar: dark
+            ))
+        }
         for (name, input) in [
-            ("menubar-mascot", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
-            ("menubar-mascot-armsup", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71, pose: .armsUp)),
-            ("menubar-logo", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
-            ("menubar-ring", StatusIconRenderer.Input(icon: .mascot, style: .ringPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
-            ("menubar-bars-warning", StatusIconRenderer.Input(icon: .mascot, style: .dualBars, values: [], primary: 0.86, secondary: 0.65, fraction: 0.86)),
-            ("menubar-stacked", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, showsSafety: true, exitSafe: true, onDarkMenuBar: false)),
-            ("menubar-stacked-dark", StatusIconRenderer.Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, showsSafety: true, exitSafe: true, onDarkMenuBar: true)),
-            ("menubar-stacked-en-dark", StatusIconRenderer.Input(icon: .logo, style: .iconPercent, values: english, primary: 0.04, secondary: 0.98, fraction: 0.98, onDarkMenuBar: true)),
+            ("menubar-mascot", Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-mascot-armsup", Input(icon: .mascot, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71, frame: MascotFrame(pose: .armsUp))),
+            ("menubar-logo", Input(icon: .logo, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-logo-shield", Input(icon: .logo, style: .iconPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71, showsSafety: true, exitSafe: true)),
+            ("menubar-ring", Input(icon: .mascot, style: .ringPercent, values: one, primary: 0.71, secondary: 0.65, fraction: 0.71)),
+            ("menubar-bars-warning", Input(icon: .mascot, style: .dualBars, values: [], primary: 0.86, secondary: 0.65, fraction: 0.86)),
+            shield("menubar-shield-safe", safe: true, dark: false),
+            shield("menubar-shield-safe-dark", safe: true, dark: true),
+            shield("menubar-shield-risk-dark", dark: true),
+            shield("menubar-shield-severe-dark", severe: true, dark: true),
+            shield("menubar-shield-loading-dark", loading: true, dark: true),
+            ("menubar-shield-no-usage-dark", Input(icon: .mascot, style: .icon, values: [], primary: 0, secondary: 0, fraction: nil, frame: holding, showsSafety: true, exitSafe: true)),
+            ("menubar-stacked", Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, frame: holding, showsSafety: true, exitSafe: true, onDarkMenuBar: false)),
+            ("menubar-stacked-dark", Input(icon: .mascot, style: .iconPercent, values: several, primary: 0.04, secondary: 0.98, fraction: 0.98, frame: holding, showsSafety: true, exitSafe: true, onDarkMenuBar: true)),
+            ("menubar-stacked-en-dark", Input(icon: .logo, style: .iconPercent, values: english, primary: 0.04, secondary: 0.98, fraction: 0.98, onDarkMenuBar: true)),
         ] {
             let image = StatusIconRenderer.image(input)
-            let scale: CGFloat = 4
-            let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-            guard let rep = NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height), bitsPerSample: 8,
-                samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-            ) else { continue }
-            rep.size = image.size
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            (name.hasSuffix("-dark") ? NSColor(white: 0.12, alpha: 1) : NSColor.white).setFill()
-            NSRect(origin: .zero, size: image.size).fill()
-            image.draw(in: NSRect(origin: .zero, size: image.size))
-            NSGraphicsContext.restoreGraphicsState()
-            try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("\(name).png"))
+            write(snapshot([[image]], gap: 0, dark: name.hasSuffix("-dark")), to: dir.appendingPathComponent("\(name).png"))
         }
+
+        // 官方动画逐帧：每段一行，Clawd 拿着安全盾牌
+        let base = Input(icon: .mascot, style: .icon, values: [], primary: 0, secondary: 0, fraction: 0.3, showsSafety: true, exitSafe: true)
+        let sequences = [[holding] + MascotAnimation.blink(holding)] + MascotAnimation.allCases.map(\.frames)
+        let rows = sequences.map { frames in
+            frames.map { frame -> NSImage in
+                var input = base
+                input.frame = frame == .rest ? holding : frame
+                return StatusIconRenderer.image(input)
+            }
+        }
+        write(snapshot(rows, gap: 3, dark: true), to: dir.appendingPathComponent("mascot-animations.png"))
 
         try? ClaudeBrand.logoSVG.write(to: dir.appendingPathComponent("claude-logo.svg"), atomically: true, encoding: .utf8)
         let iconsDir = dir.appendingPathComponent("Icons")
@@ -84,5 +98,37 @@ enum AssetExporter {
             try? icon.markup.write(to: iconsDir.appendingPathComponent("\(icon.rawValue).svg"), atomically: true, encoding: .utf8)
         }
         print("exported to \(dir.path)")
+    }
+
+    /// 把若干行图片按 @4x 拼成一张（便于检查像素对齐）
+    private static func snapshot(_ rows: [[NSImage]], gap: CGFloat, dark: Bool) -> NSBitmapImageRep? {
+        let cell = rows.flatMap { $0 }.reduce(NSSize.zero) { NSSize(width: max($0.width, $1.size.width), height: max($0.height, $1.size.height)) }
+        let columns = rows.map(\.count).max() ?? 0
+        let size = NSSize(
+            width: CGFloat(columns) * cell.width + CGFloat(max(0, columns - 1)) * gap,
+            height: CGFloat(rows.count) * cell.height + CGFloat(max(0, rows.count - 1)) * gap
+        )
+        let scale: CGFloat = 4
+        guard size.width > 0, let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale), bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        (dark ? NSColor(white: 0.12, alpha: 1) : NSColor.white).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        for (r, row) in rows.enumerated() {
+            for (c, image) in row.enumerated() {
+                let origin = NSPoint(x: CGFloat(c) * (cell.width + gap), y: size.height - CGFloat(r + 1) * cell.height - CGFloat(r) * gap)
+                image.draw(in: NSRect(origin: origin, size: image.size))
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    private static func write(_ rep: NSBitmapImageRep?, to url: URL) {
+        try? rep?.representation(using: .png, properties: [:])?.write(to: url)
     }
 }

@@ -23,10 +23,11 @@ final class MenuBarController: NSObject {
 
     // 状态栏图标动画
     private var iconInput: StatusIconRenderer.Input?
-    private var poseReset: DispatchWorkItem?
+    private let animator = MascotAnimator.shared
     private var lastPulse = 0
     private var shieldTicker: Timer?
     private var shieldPhase: CGFloat = 0
+    private var occlusionObserver: NSObjectProtocol?
 
     var isOpen: Bool { presentation.isVisible }
 
@@ -49,7 +50,21 @@ final class MenuBarController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .imageOnly
         button.toolTip = "Claude Usage Monitor"
+        animator.onFrame = { [weak self] frame in
+            self?.redraw { $0.frame = frame }
+        }
+        // 全屏应用隐藏了菜单栏时 Clawd 停下
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateVisibility() }
+        }
         renderIcon()
+    }
+
+    private func updateVisibility() {
+        guard let window = statusItem.button?.window else { return }
+        animator.setVisible(window.occlusionState.contains(.visible))
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -57,6 +72,7 @@ final class MenuBarController: NSObject {
             hide()
             showContextMenu()
         } else {
+            animator.poke()
             toggle()
         }
     }
@@ -94,6 +110,7 @@ final class MenuBarController: NSObject {
         withObservationTracking {
             _ = prefs.menuBarIcon
             _ = prefs.menuBarStyle
+            _ = prefs.menuBarAnimation
             _ = prefs.menuBarItems
             _ = prefs.showExitSafety
             _ = prefs.warningThreshold
@@ -107,7 +124,7 @@ final class MenuBarController: NSObject {
                 guard let self else { return }
                 if self.store.pulse != self.lastPulse {
                     self.lastPulse = self.store.pulse
-                    self.cheer()
+                    self.animator.dataArrived()
                 }
                 self.renderIcon()
                 self.observeIconInputs()
@@ -134,7 +151,7 @@ final class MenuBarController: NSObject {
         let input = StatusIconRenderer.Input(
             icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
             primary: primary, secondary: week?.fraction ?? 0, fraction: fraction,
-            pose: iconInput?.pose ?? .idle,
+            frame: animator.frame,
             showsSafety: (prefs.showExitSafety && known) || shield == .severe,
             exitSafe: shield == .safe,
             ipv6Direct: shield == .severe,
@@ -160,6 +177,21 @@ final class MenuBarController: NSObject {
         }
         statusItem.button?.toolTip = tip.isEmpty ? "Claude Usage Monitor" : tip.joined(separator: " · ")
         updateShieldMotion(loading: shield == .loading && prefs.showExitSafety)
+        // 显示盾牌时，Clawd 跟着出口状态：确认中一直张望，不安全时只做警惕的动作
+        let mood: MascotAnimator.Mood = switch (input.showsSafety, shield) {
+        case (true, .loading): .checking
+        case (true, .risk), (true, .severe): .wary
+        default: .calm
+        }
+        animator.configure(enabled: prefs.menuBarAnimation && input.showsMascot, holdsShield: input.shieldInHand, mood: mood)
+    }
+
+    /// 只换动画的一帧：沿用上次算好的数值，不重新计算
+    private func redraw(_ change: (inout StatusIconRenderer.Input) -> Void) {
+        guard var input = iconInput else { return }
+        change(&input)
+        iconInput = input
+        statusItem.button?.image = StatusIconRenderer.image(input)
     }
 
     /// 只有安全出口重新确认时才转。大约 1.1 秒一圈，确认结束就停。
@@ -171,7 +203,8 @@ final class MenuBarController: NSObject {
                     guard let self else { return }
                     self.shieldPhase += .pi * 2 / 34
                     if self.shieldPhase > .pi * 2 { self.shieldPhase -= .pi * 2 }
-                    self.renderIcon()
+                    let phase = self.shieldPhase
+                    self.redraw { $0.shieldPhase = phase }
                 }
             }
             timer.tolerance = 1.0 / 120
@@ -186,23 +219,6 @@ final class MenuBarController: NSObject {
 
     private var menuBarIsDark: Bool {
         statusItem.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    }
-
-    /// 有新数据时 Clawd 举一下手
-    private func cheer() {
-        guard var input = iconInput, input.icon == .mascot else { return }
-        poseReset?.cancel()
-        input.pose = .armsUp
-        iconInput = input
-        statusItem.button?.image = StatusIconRenderer.image(input)
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, var input = self.iconInput else { return }
-            input.pose = .idle
-            self.iconInput = input
-            self.statusItem.button?.image = StatusIconRenderer.image(input)
-        }
-        poseReset = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
     }
 
     // MARK: 面板

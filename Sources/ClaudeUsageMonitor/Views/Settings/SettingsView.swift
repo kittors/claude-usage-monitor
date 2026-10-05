@@ -289,6 +289,9 @@ private struct DisplayPage: View {
     /// 指针停在哪个数值方块上：上方的预览据此突出这一列，或预览加入它之后的样子
     @State private var hoveredItem: MenuBarItem?
 
+    /// 菜单栏上画的是 Clawd（圆环样式时换成圆环）
+    private var showsMascot: Bool { prefs.menuBarIcon == .mascot && prefs.menuBarStyle != .ringPercent }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsHeader(title: L10n.t("菜单栏", "Menu bar"))
@@ -296,6 +299,18 @@ private struct DisplayPage: View {
                 .padding(.vertical, 12)
             SettingsRow(title: L10n.t("图标", "Icon")) {
                 PillSegmented(options: MenuBarIcon.allCases.map { ($0, $0 == .mascot ? "Clawd" : L10n.t("Claude 标志", "Claude logo")) }, selection: $prefs.menuBarIcon)
+            }
+            if showsMascot {
+                Hairline()
+                SettingsRow(
+                    title: L10n.t("Clawd 动画", "Clawd animation"),
+                    detail: L10n.t(
+                        "眨眼、张望、蹦跳、转身，动作取自 Claude Code。有新用量时跳一下。系统开启「减弱动态效果」时不动。",
+                        "Blinks, looks around, hops, and turns, with moves from Claude Code. Hops when new usage arrives. Stays still with Reduce Motion."
+                    )
+                ) {
+                    SwitchToggle(isOn: $prefs.menuBarAnimation)
+                }
             }
             Hairline()
             SettingsRow(title: L10n.t("样式", "Style")) {
@@ -306,7 +321,9 @@ private struct DisplayPage: View {
                 MenuBarItemsRow(prefs: prefs, store: store, hovered: $hoveredItem)
             }
             Hairline()
-            SettingsRow(title: L10n.t("出口安全", "Exit safety"), detail: L10n.t("在数值右侧显示盾牌。官方请求只走 IPv4。IPv6 直连中国大陆、香港或澳门时，菜单栏会警告。", "A shield beside the value. Official requests use IPv4 only. A direct IPv6 connection from mainland China, Hong Kong, or Macau warns in the menu bar.")) {
+            SettingsRow(title: L10n.t("出口安全", "Exit safety"), detail: showsMascot
+                ? L10n.t("Clawd 举着出口盾牌。官方请求只走 IPv4。IPv6 直连中国大陆、香港或澳门时，菜单栏会警告。", "Clawd holds the exit shield. Official requests use IPv4 only. A direct IPv6 connection from mainland China, Hong Kong, or Macau warns in the menu bar.")
+                : L10n.t("在数值右侧显示盾牌。官方请求只走 IPv4。IPv6 直连中国大陆、香港或澳门时，菜单栏会警告。", "A shield beside the value. Official requests use IPv4 only. A direct IPv6 connection from mainland China, Hong Kong, or Macau warns in the menu bar.")) {
                 SwitchToggle(isOn: $prefs.showExitSafety)
             }
 
@@ -527,6 +544,8 @@ private struct MenuBarPreview: View {
         let limits = values.compactMap(\.fraction)
         let shield = network.menuShield
         let loading = prefs.showExitSafety && shield == .loading
+        // 和菜单栏上的 Clawd 同一帧
+        let frame = MascotAnimator.shared.frame
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !loading)) { context in
             let phase = loading
                 ? CGFloat(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.13) / 1.13) * .pi * 2
@@ -534,6 +553,7 @@ private struct MenuBarPreview: View {
             let input = StatusIconRenderer.Input(
                 icon: prefs.menuBarIcon, style: prefs.menuBarStyle, values: values,
                 primary: limits.first ?? 0.42, secondary: 0.65, fraction: limits.max() ?? 0.42,
+                frame: frame,
                 showsSafety: (prefs.showExitSafety && shield != .none) || shield == .severe,
                 exitSafe: shield == .safe,
                 ipv6Direct: shield == .severe,

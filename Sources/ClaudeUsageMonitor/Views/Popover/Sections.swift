@@ -337,183 +337,346 @@ extension LimitsSection {
 // MARK: - 本期消耗
 
 /// 本月周期 / 本周期 / 每日。等宽标签，选中项用面板里已有的浅色块。
+/// 选中块是同一块在下面平移；标签的两种样式叠在一起淡入淡出，过渡时不用逐帧重画文字。
 private struct SpanTabs: View {
-    @Binding var selection: CostSpan
-    @Namespace private var namespace
+    /// 直接拿偏好而不是 Binding：在父视图里创建 Binding 会读一次当前值，切换时整个本期消耗区都要跟着重建
+    let prefs: Preferences
 
     var body: some View {
+        let selection = prefs.costSpan
+        let spans = CostSpan.allCases
+        let index = CGFloat(spans.firstIndex(of: selection) ?? 0)
         HStack(spacing: 2) {
-            ForEach(CostSpan.allCases) { span in
+            ForEach(spans) { span in
                 let selected = span == selection
-                Text(span.title)
-                    .font(.system(size: 12, weight: selected ? .medium : .regular))
-                    .foregroundStyle(selected ? Palette.text : Palette.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 26)
-                    .background {
-                        if selected {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.white.opacity(0.13))
-                                .matchedGeometryEffect(id: "span", in: namespace)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard span != selection else { return }
-                        // 选中块滑过去，下面的数字、柱状图、模型行一起过渡
-                        withAnimation(.disclosure) { selection = span }
-                    }
+                ZStack {
+                    label(span.title, weight: .regular, color: Palette.secondary)
+                        .opacity(selected ? 0 : 1)
+                    label(span.title, weight: .medium, color: Palette.text)
+                        .opacity(selected ? 1 : 0)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 26)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard span != prefs.costSpan else { return }
+                    // 选中块滑过去，下面的数字、柱状图、模型行一起过渡
+                    withAnimation(.disclosure) { prefs.costSpan = span }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(span.title)
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .background(alignment: .leading) {
+            GeometryReader { geo in
+                let width = (geo.size.width - 2 * CGFloat(spans.count - 1)) / CGFloat(spans.count)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.white.opacity(0.13))
+                    .frame(width: width, height: geo.size.height)
+                    .offset(x: index * (width + 2))
             }
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.05)))
     }
+
+    private func label(_ title: String, weight: Font.Weight, color: Color) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: weight))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .compositingGroup()
+    }
 }
 
+/// 本期消耗。三个周期的数字都已排好叠在一起，切换周期时只是淡入淡出。
+/// 这里的 body 不读当前选中的周期：切换时只有跟周期有关的几个小视图重新计算，整块内容不用重建。
 struct CycleSection: View {
     let snapshot: UsageSnapshot
     @Bindable var prefs: Preferences
 
-    @State private var hoveredDay: Int?
-    @State private var hoveredToken: String?
-
-    private var period: PeriodUsage? {
-        switch prefs.costSpan {
-        case .day: snapshot.day
-        case .week: snapshot.week
-        case .month: snapshot.billing
-        }
-    }
-
     var body: some View {
         let money = prefs.money
-        let recent = Array(snapshot.daily.suffix(14))
+        let figures = SpanFigures.all(snapshot, money: money)
 
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n.t("本期消耗", "Spend"))
                     .font(.sectionTitle)
                     .foregroundStyle(Palette.secondary)
-                Text(period.map { UsageCalculator.periodRange(start: $0.start, end: $0.end, calendar: .current, locale: Localization.shared.locale) }
-                    ?? L10n.t("同步每周限额后显示本周区间", "The weekly range appears after the weekly limit syncs"))
-                    .font(.system(size: 11, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Palette.tertiary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .contentTransition(.numericText())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            SpanTabs(selection: $prefs.costSpan)
-            if let billing = period {
-                cycleBody(billing, money: money, recent: recent)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func cycleBody(_ billing: PeriodUsage, money: MoneyFormat, recent: [DayUsage]) -> some View {
-        let tokens = billing.tokens
-        let costs = CategoryCosts(models: billing.models)
-
-        VStack(alignment: .leading, spacing: 12) {
-            // 每分钟刷新：日均和预计随时间变化，没有新消耗时也不会停在旧值上
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                header(billing, money: money, recent: recent, now: context.date)
-            }
-
-            HStack(spacing: 0) {
-                stat(L10n.t("总 Tokens", "Tokens"), Fmt.magnitude(tokens.total), help: "≈ \(Fmt.grouped(tokens.total)) tokens")
-                Spacer()
-                stat(L10n.t("请求", "Requests"), L10n.t("\(Fmt.grouped(billing.requests)) 次", Fmt.grouped(billing.requests)), help: nil)
-                Spacer()
-                stat(L10n.t("今日", "Today"), money.whole(snapshot.today?.cost ?? 0), help: nil)
-            }
-
-            HStack(alignment: .top, spacing: 0) {
-                tokenColumn("input", L10n.t("新增输入", "Input"), tokens.input, cost: costs.input, color: Palette.input, money: money)
-                tokenColumn("output", L10n.t("输出", "Output"), tokens.output, cost: costs.output, color: Palette.output, money: money)
-                tokenColumn("write", L10n.t("缓存创建", "Cache write"), tokens.cacheWrite, cost: costs.cacheWrite, color: Palette.cacheWrite, money: money)
-                tokenColumn("read", L10n.t("缓存命中", "Cache read"), tokens.cacheRead, cost: costs.cacheRead, color: Palette.cacheRead, money: money)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(L10n.t("缓存命中率", "Cache hit rate"))
-                        .font(.rowLabel)
-                        .foregroundStyle(Palette.text)
-                    Spacer()
-                    Text(L10n.t("省 \(money.compact(costs.savings))", "Saved \(money.compact(costs.savings))"))
-                        .font(.caption)
-                        .foregroundStyle(Palette.tertiary)
-                        .contentTransition(.numericText())
-                        .help(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price."))
-                    Text(Fmt.percent(tokens.cacheHitRate, digits: 1))
-                        .font(.rowValue)
-                        .foregroundStyle(Palette.text)
-                        .monospacedDigit()
-                        .contentTransition(.numericText(value: tokens.cacheHitRate))
-                }
-                ThinBar(fraction: tokens.cacheHitRate, color: Color.white.opacity(0.42), delay: 0.14)
-            }
-
-            if !billing.models.isEmpty {
-                ModelList(models: billing.models, total: billing.cost, money: money)
-            }
-        }
-    }
-
-    private func header(_ billing: PeriodUsage, money: MoneyFormat, recent: [DayUsage], now: Date) -> some View {
-        let daily = billing.dailyAverage(now: now)
-        // 多天的周期：预计就是面板上显示的日均 × 天数，两个数对得上；只有一天时按小时外推
-        let projected = prefs.costSpan == .day ? billing.projectedCost(now: now) : daily * Double(billing.dayCount)
-        let projectedText = prefs.costSpan == .day ? money.whole(projected) : money.whole(daily, times: billing.dayCount)
-        let summary = prefs.costSpan == .day
-            ? L10n.t("当天", "Today")
-            : L10n.t("第 \(billing.dayIndex) / \(billing.dayCount) 天 · 日均 \(money.whole(daily))", "Day \(billing.dayIndex) of \(billing.dayCount) · \(money.whole(daily))/day")
-        // 柱状图里属于这个周期的天：和周期有交集的那几根
-        let periodStart = recent.firstIndex { $0.date.addingTimeInterval(86_400) > billing.start }
-
-        return HStack(alignment: .bottom, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(money.string(billing.cost))
-                        .font(.system(size: 26, weight: .semibold))
-                        .tracking(-0.4)
-                        .foregroundStyle(Palette.text)
-                        .monospacedDigit()
-                        .contentTransition(.numericText(value: money.convert(billing.cost)))
+                SpanLayers(prefs: prefs) { s in
+                    Text(figures[s]?.range ?? L10n.t("同步每周限额后显示本周区间", "The weekly range appears after the weekly limit syncs"))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .onTapGesture {
-                            let all = MoneyFormat.Unit.allCases
-                            let index = all.firstIndex(of: prefs.currency) ?? 0
-                            withAnimation(.quiet) { prefs.currency = all[(index + 1) % all.count] }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(Palette.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            SpanTabs(prefs: prefs)
+
+            SpanAvailable(prefs: prefs, snapshot: snapshot) {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // 每分钟刷新：日均和预计随时间变化，没有新消耗时也不会停在旧值上
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            CycleHeader(snapshot: snapshot, prefs: prefs, now: context.date)
                         }
-                        .help(L10n.t("点击切换货币", "Click to change currency"))
-                    if billing.cost > 0 {
-                        Text(L10n.t("预计 \(projectedText)", "→ \(projectedText)"))
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Palette.tertiary)
-                            .monospacedDigit()
-                            .contentTransition(.numericText(value: money.convert(projected)))
-                            .lineLimit(1)
-                            .fixedSize()
-                            .help(prefs.costSpan == .day
-                                ? L10n.t("照今天到现在的速度，今天预计一共 \(projectedText)", "At today's pace so far, about \(projectedText) today")
-                                : L10n.t("照现在的速度，这个周期预计一共 \(projectedText)（日均 \(money.whole(daily)) × \(billing.dayCount) 天）", "At this pace, about \(projectedText) for the period (\(money.whole(daily))/day × \(billing.dayCount) days)"))
-                            .transition(.opacity)
+
+                        HStack(spacing: 0) {
+                            SpanStat(prefs: prefs, label: L10n.t("总 Tokens", "Tokens"), values: figures.mapValues(\.tokens), help: figures.mapValues(\.tokensHelp))
+                            Spacer()
+                            SpanStat(prefs: prefs, label: L10n.t("请求", "Requests"), values: figures.mapValues(\.requests))
+                            Spacer()
+                            // 今天的花费不随周期变化
+                            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                                Text(L10n.t("今日", "Today"))
+                                    .font(.caption)
+                                    .foregroundStyle(Palette.tertiary)
+                                Text(money.whole(snapshot.today?.cost ?? 0))
+                                    .font(.rowValue)
+                                    .foregroundStyle(Palette.text)
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                            }
+                        }
+
+                        HStack(alignment: .top, spacing: 0) {
+                            TokenColumn(prefs: prefs, label: L10n.t("新增输入", "Input"), color: Palette.input, figures: figures.mapValues(\.input))
+                            TokenColumn(prefs: prefs, label: L10n.t("输出", "Output"), color: Palette.output, figures: figures.mapValues(\.output))
+                            TokenColumn(prefs: prefs, label: L10n.t("缓存创建", "Cache write"), color: Palette.cacheWrite, figures: figures.mapValues(\.cacheWrite))
+                            TokenColumn(prefs: prefs, label: L10n.t("缓存命中", "Cache read"), color: Palette.cacheRead, figures: figures.mapValues(\.cacheRead))
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(L10n.t("缓存命中率", "Cache hit rate"))
+                                    .font(.rowLabel)
+                                    .foregroundStyle(Palette.text)
+                                Spacer()
+                                SpanLayers(prefs: prefs, alignment: .trailing) { s in
+                                    if let f = figures[s] { Text(f.saved) }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(Palette.tertiary)
+                                .help(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price."))
+                                SpanLayers(prefs: prefs, alignment: .trailing) { s in
+                                    if let f = figures[s] {
+                                        Text(f.hitRate).contentTransition(.numericText(value: f.hitRateValue))
+                                    }
+                                }
+                                .font(.rowValue)
+                                .foregroundStyle(Palette.text)
+                                .monospacedDigit()
+                            }
+                            SpanBar(prefs: prefs, fractions: figures.mapValues(\.hitRateValue))
+                        }
+                    }
+                    ModelLists(prefs: prefs, snapshot: snapshot, money: money)
+                }
+            }
+        }
+    }
+
+    static func day(_ date: Date) -> String {
+        LimitsSection.formatter(Localization.shared.isChinese ? "M月d日" : "MMM d").string(from: date)
+    }
+
+    static func dayWithWeekday(_ date: Date) -> String {
+        LimitsSection.formatter(Localization.shared.isChinese ? "M月d日 EEE" : "EEE, MMM d").string(from: date)
+    }
+}
+
+private extension UsageSnapshot {
+    func period(_ span: CostSpan) -> PeriodUsage? {
+        switch span {
+        case .day: day
+        case .week: week
+        case .month: billing
+        }
+    }
+}
+
+/// 一个周期在本期消耗区要显示的文字。数据或货币变了才重新算，切换周期时直接取用。
+private struct SpanFigures {
+    var range: String
+    var tokens: String
+    var tokensHelp: String
+    var requests: String
+    var saved: String
+    var hitRate: String
+    var hitRateValue: Double
+    var input: TokenColumn.Figure
+    var output: TokenColumn.Figure
+    var cacheWrite: TokenColumn.Figure
+    var cacheRead: TokenColumn.Figure
+
+    @MainActor
+    static func all(_ snapshot: UsageSnapshot, money: MoneyFormat) -> [CostSpan: SpanFigures] {
+        var result: [CostSpan: SpanFigures] = [:]
+        for span in CostSpan.allCases {
+            guard let p = snapshot.period(span) else { continue }
+            let costs = CategoryCosts(models: p.models)
+            func column(_ tokens: Int64, _ cost: Double) -> TokenColumn.Figure {
+                TokenColumn.Figure(tokens: tokens, cost: cost, amount: Fmt.magnitude(tokens), money: money.whole(cost))
+            }
+            result[span] = SpanFigures(
+                range: UsageCalculator.periodRange(start: p.start, end: p.end, calendar: .current, locale: Localization.shared.locale),
+                tokens: Fmt.magnitude(p.tokens.total),
+                tokensHelp: "≈ \(Fmt.grouped(p.tokens.total)) tokens",
+                requests: L10n.t("\(Fmt.grouped(p.requests)) 次", Fmt.grouped(p.requests)),
+                saved: L10n.t("省 \(money.compact(costs.savings))", "Saved \(money.compact(costs.savings))"),
+                hitRate: Fmt.percent(p.tokens.cacheHitRate, digits: 1),
+                hitRateValue: p.tokens.cacheHitRate,
+                input: column(p.tokens.input, costs.input),
+                output: column(p.tokens.output, costs.output),
+                cacheWrite: column(p.tokens.cacheWrite, costs.cacheWrite),
+                cacheRead: column(p.tokens.cacheRead, costs.cacheRead)
+            )
+        }
+        return result
+    }
+}
+
+/// 三个周期的同一项叠在同一个位置，只显示选中的那个。
+/// 切换周期时只是淡入淡出：三份文字早已排好、画好，不用在切换那一帧重新测量，也不用逐帧重画；
+/// 这一项的大小取三份中最大的，切换时旁边的内容不会挪动。
+private struct SpanLayers<Content: View>: View {
+    let prefs: Preferences
+    var alignment: Alignment = .leading
+    /// 数据更新时数字怎么过渡
+    var transition: ContentTransition = .numericText()
+    @ViewBuilder let content: (CostSpan) -> Content
+
+    var body: some View {
+        let selection = prefs.costSpan
+        ZStack(alignment: alignment) {
+            ForEach(CostSpan.allCases) { span in
+                let shown = span == selection
+                content(span)
+                    .contentTransition(transition)
+                    // 先合成为一组再改透明度：透明度落在图层上，过渡时不用逐帧重画文字
+                    .compositingGroup()
+                    .opacity(shown ? 1 : 0)
+                    .allowsHitTesting(shown)
+                    .accessibilityHidden(!shown)
+            }
+        }
+    }
+}
+
+/// 选中的周期还没有数据时（本周要等每周限额同步）下面的数字整块不显示
+private struct SpanAvailable<Content: View>: View {
+    let prefs: Preferences
+    let snapshot: UsageSnapshot
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if snapshot.period(prefs.costSpan) != nil {
+            content
+        }
+    }
+}
+
+/// 一项统计：标签 + 三个周期叠在一起的数值
+private struct SpanStat: View {
+    let prefs: Preferences
+    let label: String
+    let values: [CostSpan: String]
+    var help: [CostSpan: String] = [:]
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(Palette.tertiary)
+            SpanLayers(prefs: prefs) { s in
+                if let value = values[s] { Text(value) }
+            }
+            .font(.rowValue)
+            .foregroundStyle(Palette.text)
+            .monospacedDigit()
+        }
+        .help(help[prefs.costSpan] ?? "")
+    }
+}
+
+/// 缓存命中率的进度条，跟着选中的周期
+private struct SpanBar: View {
+    let prefs: Preferences
+    let fractions: [CostSpan: Double]
+
+    var body: some View {
+        ThinBar(fraction: fractions[prefs.costSpan] ?? 0, color: Color.white.opacity(0.42), delay: 0.14)
+    }
+}
+
+/// 各周期的模型列表叠在一起。行数各周期不同：每份量出自己的高度，这一块按选中的那份显示，
+/// 多出来的行在过渡中淡出、收起
+private struct ModelLists: View {
+    let prefs: Preferences
+    let snapshot: UsageSnapshot
+    let money: MoneyFormat
+
+    @State private var heights: [CostSpan: CGFloat] = [:]
+
+    var body: some View {
+        let selection = prefs.costSpan
+        ZStack(alignment: .top) {
+            ForEach(CostSpan.allCases) { span in
+                let shown = span == selection
+                Group {
+                    if let p = snapshot.period(span), !p.models.isEmpty {
+                        ModelList(models: p.models, total: p.cost, money: money)
+                            .padding(.top, 12)
+                    } else {
+                        Color.clear.frame(height: 0)
                     }
                 }
-                Group {
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heights[span] = $0 }
+                .contentTransition(.numericText())
+                .compositingGroup()
+                .opacity(shown ? 1 : 0)
+                .allowsHitTesting(shown)
+                .accessibilityHidden(!shown)
+            }
+        }
+        .frame(height: heights[selection], alignment: .top)
+        .clipped()
+    }
+}
+
+/// 本期消耗的总额、预计与日均，右边是最近 14 天的柱状图
+private struct CycleHeader: View {
+    let snapshot: UsageSnapshot
+    @Bindable var prefs: Preferences
+    let now: Date
+
+    @State private var hoveredDay: Int?
+
+    var body: some View {
+        let money = prefs.money
+        let span = prefs.costSpan
+        let recent = Array(snapshot.daily.suffix(14))
+        // 柱状图里属于这个周期的天：和周期有交集的那几根
+        let periodStart = snapshot.period(span).flatMap { p in recent.firstIndex { $0.date.addingTimeInterval(86_400) > p.start } }
+
+        HStack(alignment: .bottom, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                // 按基线对齐：某个周期的金额缩小了，也和其它周期站在同一条基线上，下面的日均行不跟着动
+                SpanLayers(prefs: prefs, alignment: .leadingFirstTextBaseline) { s in
+                    if let p = snapshot.period(s) { total(p, span: s, money: money) }
+                }
+                .help(snapshot.period(span).map { help($0, span: span, money: money) } ?? "")
+                ZStack(alignment: .leading) {
+                    SpanLayers(prefs: prefs) { s in
+                        if let p = snapshot.period(s) { Text(summary(p, span: s, money: money)) }
+                    }
+                    .opacity(hoveredDay == nil ? 1 : 0)
                     if let i = hoveredDay, let day = recent[safe: i] {
-                        Text(L10n.t("\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests)) 次", "\(Self.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests))"))
-                    } else {
-                        Text(summary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                            .contentTransition(.numericText())
+                        Text(L10n.t("\(CycleSection.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests)) 次", "\(CycleSection.dayWithWeekday(day.date)) · \(money.string(day.cost)) · \(Fmt.grouped(day.requests))"))
                     }
                 }
                 .font(.caption)
@@ -529,55 +692,99 @@ struct CycleSection: View {
         }
     }
 
-    private func stat(_ label: String, _ value: String, help: String?) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Text(label)
-                .font(.caption)
+    /// 总额和预计排成一行文字：放不下时两者一起等比缩小，不会把整块内容撑宽
+    private func total(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> some View {
+        let amount = Text(money.string(p.cost))
+            .font(.system(size: 26, weight: .semibold))
+            .tracking(-0.4)
+            .foregroundStyle(Palette.text)
+        var line = amount
+        if p.cost > 0 {
+            let projected = projectedText(p, span: span, money: money)
+            let suffix = Text("  " + L10n.t("预计 \(projected)", "→ \(projected)"))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Palette.tertiary)
-            Text(value)
-                .font(.rowValue)
-                .foregroundStyle(Palette.text)
-                .monospacedDigit()
-                .contentTransition(.numericText())
+            line = Text("\(amount)\(suffix)")
         }
-        .help(help ?? "")
+        return line
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .contentTransition(.numericText(value: money.convert(p.cost)))
+            .onTapGesture {
+                let all = MoneyFormat.Unit.allCases
+                let index = all.firstIndex(of: prefs.currency) ?? 0
+                withAnimation(.quiet) { prefs.currency = all[(index + 1) % all.count] }
+            }
     }
 
-    private func tokenColumn(_ id: String, _ label: String, _ value: Int64, cost: Double, color: Color, money: MoneyFormat) -> some View {
-        let hovering = hoveredToken == id
-        return VStack(alignment: .leading, spacing: 4) {
+    /// 多天的周期：预计就是面板上显示的日均 × 天数，两个数对得上；只有一天时按小时外推
+    private func projectedText(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> String {
+        span == .day ? money.whole(p.projectedCost(now: now)) : money.whole(p.dailyAverage(now: now), times: p.dayCount)
+    }
+
+    private func summary(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> String {
+        guard span != .day else { return L10n.t("当天", "Today") }
+        let daily = money.whole(p.dailyAverage(now: now))
+        return L10n.t("第 \(p.dayIndex) / \(p.dayCount) 天 · 日均 \(daily)", "Day \(p.dayIndex) of \(p.dayCount) · \(daily)/day")
+    }
+
+    private func help(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> String {
+        let currency = L10n.t("点击金额切换货币", "Click the amount to change currency")
+        guard p.cost > 0 else { return currency }
+        let projected = projectedText(p, span: span, money: money)
+        let daily = money.whole(p.dailyAverage(now: now))
+        let pace = span == .day
+            ? L10n.t("照今天到现在的速度，今天预计一共 \(projected)", "At today's pace so far, about \(projected) today")
+            : L10n.t("照现在的速度，这个周期预计一共 \(projected)（日均 \(daily) × \(p.dayCount) 天）", "At this pace, about \(projected) for the period (\(daily)/day × \(p.dayCount) days)")
+        return "\(pace)\n\(currency)"
+    }
+}
+
+/// 一类 token：上面是类别，下面是数量；指针停在上面时换成折算的金额
+private struct TokenColumn: View {
+    struct Figure: Equatable {
+        var tokens: Int64
+        var cost: Double
+        /// 数量，例如「2.6 万」「227.6k」
+        var amount: String
+        /// 折算的金额
+        var money: String
+    }
+
+    let prefs: Preferences
+    let label: String
+    let color: Color
+    let figures: [CostSpan: Figure]
+
+    @State private var hovering = false
+
+    var body: some View {
+        let selection = prefs.costSpan
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
                 Circle().fill(color).frame(width: 5, height: 5)
                 Text(label)
             }
             .font(.caption)
             .foregroundStyle(Palette.tertiary)
-            Text(hovering ? money.whole(cost) : Fmt.magnitude(value))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Palette.text)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .contentTransition(.opacity)
+            SpanLayers(prefs: prefs, transition: .opacity) { s in
+                if let figure = figures[s] {
+                    let money = hovering && s == selection
+                    Text(money ? figure.money : figure.amount)
+                        .lineLimit(1)
+                        // 只有换成金额时才可能放不下；平时不缩放，省去按各种字号反复测量
+                        .minimumScaleFactor(money ? 0.8 : 1)
+                }
+            }
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Palette.text)
+            .monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onHover { h in withAnimation(.quiet) { hoveredToken = h ? id : nil } }
-        .help(L10n.t("\(label)：\(Fmt.grouped(value)) tokens · 约 \(money.string(cost))", "\(label): \(Fmt.grouped(value)) tokens · about \(money.string(cost))"))
-    }
-
-    static func day(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Localization.shared.locale
-        f.dateFormat = Localization.shared.isChinese ? "M月d日" : "MMM d"
-        return f.string(from: date)
-    }
-
-    static func dayWithWeekday(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Localization.shared.locale
-        f.dateFormat = Localization.shared.isChinese ? "M月d日 EEE" : "EEE, MMM d"
-        return f.string(from: date)
+        .onHover { h in withAnimation(.quiet) { hovering = h } }
+        .help(figures[selection].map { L10n.t("\(label)：\(Fmt.grouped($0.tokens)) tokens · 约 \(prefs.money.string($0.cost))", "\(label): \(Fmt.grouped($0.tokens)) tokens · about \(prefs.money.string($0.cost))") } ?? "")
     }
 }
 
@@ -618,11 +825,9 @@ private struct ModelList: View {
             Spacer()
             Text(share)
                 .foregroundStyle(Palette.tertiary)
-                .contentTransition(.numericText())
                 .frame(width: 44, alignment: .trailing)
             Text(amount)
                 .foregroundStyle(Palette.text)
-                .contentTransition(.numericText())
                 .frame(minWidth: 64, alignment: .trailing)
         }
         .font(.system(size: 11.5))

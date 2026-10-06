@@ -29,28 +29,26 @@ final class MaskedEffectView: NSVisualEffectView {
         didSet { if oldValue != cornerRadius { updateMask() } }
     }
 
-    private var maskedSize: CGSize = .zero
-
-    override func layout() {
-        super.layout()
-        if bounds.size != maskedSize { updateMask() }
-    }
-
+    /// 九宫格遮罩：只画四个角，中间拉伸。面板高度在动画里逐帧变化时不用每帧重画一张整面板大小的遮罩。
     private func updateMask() {
-        maskedSize = bounds.size
-        guard cornerRadius > 0, bounds.width > 0, bounds.height > 0 else {
+        guard cornerRadius > 0 else {
             maskImage = nil
             return
         }
-        let path = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .path(in: CGRect(origin: .zero, size: bounds.size)).cgPath
-        maskImage = NSImage(size: bounds.size, flipped: false) { _ in
+        // 连续圆角的弧线从边上约 1.53 倍半径处开始，角上留足这么多
+        let inset = ceil(cornerRadius * 1.6)
+        let rect = CGRect(x: 0, y: 0, width: inset * 2 + 1, height: inset * 2 + 1)
+        let path = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: rect).cgPath
+        let image = NSImage(size: rect.size, flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.addPath(path)
             ctx.setFillColor(NSColor.black.cgColor)
             ctx.fillPath()
             return true
         }
+        image.capInsets = NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+        image.resizingMode = .stretch
+        maskImage = image
     }
 }
 

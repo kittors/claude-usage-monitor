@@ -45,7 +45,8 @@ struct PopoverView: View {
         .padding(.horizontal, Metrics.padding)
         .padding(.top, 13)
         .padding(.bottom, 7)
-        .frame(width: Metrics.popoverWidth)
+        // 万一某一行比面板宽，也只是往右溢出，不会把整块内容往左挤
+        .frame(width: Metrics.popoverWidth, alignment: .leading)
         .background(PanelBackground())
         // 进程出现、退出，IPv6 警告、更新提示出现时，面板高度随内容一起过渡
         .animation(.disclosure, value: ClaudeProcesses.shared.tasks.map(\.pid))

@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-06
+
+### Fixed
+
+- Switching between This month, This week and Today no longer drops frames. All three periods are laid out ahead of time and their numbers cross-fade in place, so a switch no longer measures and redraws every number. On the main thread, the first frame after a click went from about 36 ms to about 9 ms, and a whole switch from about 280 ms to about 105 ms.
+- A long amount next to its projection, such as a yen or won total, could be wider than the panel and push everything to the left. The amount and the projection now shrink together to fit on one line.
+- Opening or closing the process list while numbers are updating no longer makes the content below it jump.
+- The limit rows no longer build new date formatters every second, which removes a small stutter that could land in the middle of an animation.
+
+### Changed
+
+- In Spend, labels keep their place across periods instead of shifting with the width of each number. Numbers still roll when new usage arrives or the currency changes.
+- The tooltip on the amount explains the projection and how to change the currency.
+
 ## [1.4.0] - 2026-10-05
 
 ### Added

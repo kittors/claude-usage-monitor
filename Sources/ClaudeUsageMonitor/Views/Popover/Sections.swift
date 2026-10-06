@@ -269,11 +269,7 @@ private struct PlaceholderRow: View {
 extension LimitsSection {
     /// 官方的重置时间常带有亚秒误差（例如 13:59:59.9），就近取整到分钟再显示
     static func weekday(_ date: Date) -> String {
-        let rounded = Date(timeIntervalSince1970: (date.timeIntervalSince1970 / 60).rounded() * 60)
-        let f = DateFormatter()
-        f.locale = Localization.shared.locale
-        f.dateFormat = "EEE HH:mm"
-        return f.string(from: rounded)
+        formatter("EEE HH:mm").string(from: roundedToMinute(date))
     }
 
     /// 重置时刻，按系统当前时区。官方时间常带亚秒误差（例如 21:59:59.9），就近取整到分钟
@@ -307,18 +303,21 @@ extension LimitsSection {
         return days > 0 ? L10n.t("\(days) 天 \(hms)", "\(days)d \(hms)") : hms
     }
 
-    /// 系统当前时区的简称，例如 GMT+8
+    /// 系统当前时区的简称，例如 GMT+8。查一次要读时区名称数据，面板每秒刷新时都要用，记下来。
     static var zoneName: String {
         let zone = TimeZone.autoupdatingCurrent
-        return zone.localizedName(for: .shortStandard, locale: Localization.shared.locale) ?? zone.identifier
+        let locale = Localization.shared.locale
+        let key = "\(zone.identifier)|\(locale.identifier)"
+        if let name = zoneNames[key] { return name }
+        let name = zone.localizedName(for: .shortStandard, locale: locale) ?? zone.identifier
+        zoneNames[key] = name
+        return name
     }
 
-    private static func formatter(_ format: String) -> DateFormatter {
-        let f = DateFormatter()
-        f.locale = Localization.shared.locale
-        f.timeZone = .autoupdatingCurrent
-        f.dateFormat = format
-        return f
+    private static var zoneNames: [String: String] = [:]
+
+    static func formatter(_ format: String) -> DateFormatter {
+        DateFormats.formatter(format, locale: Localization.shared.locale)
     }
 
     private static func roundedToMinute(_ date: Date) -> Date {
@@ -328,13 +327,10 @@ extension LimitsSection {
     /// 今天 05:32 / 昨天 05:32 / 周一 05:32
     static func moment(_ date: Date) -> String {
         let cal = Calendar.current
-        let f = DateFormatter()
-        f.locale = Localization.shared.locale
-        f.dateFormat = "HH:mm"
-        if cal.isDateInToday(date) { return L10n.t("今天 \(f.string(from: date))", "Today \(f.string(from: date))") }
-        if cal.isDateInYesterday(date) { return L10n.t("昨天 \(f.string(from: date))", "Yesterday \(f.string(from: date))") }
-        f.dateFormat = "EEE HH:mm"
-        return f.string(from: date)
+        let time = formatter("HH:mm").string(from: date)
+        if cal.isDateInToday(date) { return L10n.t("今天 \(time)", "Today \(time)") }
+        if cal.isDateInYesterday(date) { return L10n.t("昨天 \(time)", "Yesterday \(time)") }
+        return formatter("EEE HH:mm").string(from: date)
     }
 }
 

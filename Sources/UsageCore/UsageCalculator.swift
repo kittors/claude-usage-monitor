@@ -297,22 +297,14 @@ public enum UsageCalculator {
     public static func periodTitle(start: Date, end: Date, calendar cal: Calendar) -> String {
         let parts = cal.dateComponents([.hour, .minute, .second], from: start)
         let midnight = (parts.hour ?? 0) == 0 && (parts.minute ?? 0) == 0 && (parts.second ?? 0) == 0
-        let f = DateFormatter()
-        f.calendar = cal
-        f.timeZone = cal.timeZone
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = midnight ? "M月d日" : "M月d日 HH:mm"
+        let f = DateFormats.formatter(midnight ? "M月d日" : "M月d日 HH:mm", locale: Locale(identifier: "zh_CN"), timeZone: cal.timeZone, calendar: cal)
         return "\(f.string(from: start)) – \(f.string(from: end.addingTimeInterval(-1)))"
     }
 
     /// 闭区间，精确到秒：开始时刻，以及下一周期开始前的最后一秒。
     public static func periodRange(start: Date, end: Date, calendar cal: Calendar, locale: Locale = Locale(identifier: "zh_CN")) -> String {
-        let f = DateFormatter()
-        f.calendar = cal
-        f.timeZone = cal.timeZone
-        f.locale = locale
         let chinese = locale.language.languageCode?.identifier == "zh"
-        f.dateFormat = chinese ? "M月d日 HH:mm:ss" : "MMM d, HH:mm:ss"
+        let f = DateFormats.formatter(chinese ? "M月d日 HH:mm:ss" : "MMM d, HH:mm:ss", locale: locale, timeZone: cal.timeZone, calendar: cal)
         return "\(f.string(from: start)) – \(f.string(from: end.addingTimeInterval(-1)))"
     }
 }

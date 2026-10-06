@@ -197,13 +197,18 @@ public struct MoneyFormat: Sendable, Equatable {
     }
 
     private static func number(_ value: Double, digits: Int) -> String {
+        numberFormatters[min(max(digits, 0), 2)].string(from: NSNumber(value: value)) ?? String(format: "%.\(digits)f", value)
+    }
+
+    /// 0 到 2 位小数各一个。面板上一次要格式化几十个金额，每次新建很费时间。
+    private static let numberFormatters: [NumberFormatter] = (0...2).map { digits in
         let f = NumberFormatter()
         f.numberStyle = .decimal
         f.groupingSeparator = ","
         f.usesGroupingSeparator = true
         f.minimumFractionDigits = digits
         f.maximumFractionDigits = digits
-        return f.string(from: NSNumber(value: value)) ?? String(format: "%.\(digits)f", value)
+        return f
     }
 
     /// 紧凑：`$1.7k`
@@ -231,6 +236,27 @@ public struct MoneyFormat: Sendable, Equatable {
     private static func whole(_ v: Double, unit: Unit) -> String {
         if unit.fractionDigits == 0 || abs(v) >= 100 { return unit.symbol + Fmt.grouped(Int64(v.rounded())) }
         return unit.symbol + String(format: "%.2f", v)
+    }
+}
+
+/// 按格式缓存的日期格式化器。新建一个要加载区域数据，面板每秒刷新、切换周期时都要用到好几个，每次新建会拖慢那一帧。
+/// 格式化本身是线程安全的；取出来以后不要再改它的属性。
+public enum DateFormats {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: DateFormatter] = [:]
+
+    public static func formatter(_ format: String, locale: Locale, timeZone: TimeZone = .autoupdatingCurrent, calendar: Calendar? = nil) -> DateFormatter {
+        let key = [format, locale.identifier, timeZone.identifier, calendar.map { "\($0.identifier)" } ?? ""].joined(separator: "|")
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = cache[key] { return cached }
+        let f = DateFormatter()
+        if let calendar { f.calendar = calendar }
+        f.locale = locale
+        f.timeZone = timeZone
+        f.dateFormat = format
+        cache[key] = f
+        return f
     }
 }
 

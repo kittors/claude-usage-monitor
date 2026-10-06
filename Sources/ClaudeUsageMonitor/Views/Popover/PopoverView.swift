@@ -31,11 +31,16 @@ struct PopoverView: View {
             NetworkPlaceRow()
                 .padding(.bottom, 8)
             ClaudeProcessSection()
-            Hairline()
-            content
-            Hairline()
-            Footer(store: store, actions: actions)
-                .padding(.top, 7)
+            // 进程列表展开、收起时，下面这整块作为一个整体移动。不分组的话，位移会下推到每个叶子视图各自做动画，
+            // 正在滚动的数字按自己那份动画走，和周围的内容错开，看起来就是跳动。
+            VStack(alignment: .leading, spacing: 0) {
+                Hairline()
+                content
+                Hairline()
+                Footer(store: store, actions: actions)
+                    .padding(.top, 7)
+            }
+            .geometryGroup()
         }
         .padding(.horizontal, Metrics.padding)
         .padding(.top, 13)

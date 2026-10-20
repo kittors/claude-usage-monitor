@@ -126,6 +126,40 @@ private func line(id: String, req: String, output: Int, time: String = "2026-09-
     #expect(PricingCatalog.info(for: "claude-opus-5").family == .opus)
 }
 
+@Test func haikuFiveFiveTiersByPromptLength() throws {
+    let info = PricingCatalog.info(for: "claude-haiku-5-5")
+    let price = try #require(info.price)
+    #expect(info.displayName == "Haiku 5.5")
+    #expect(info.contextWindow == 1_000_000)
+    #expect(!info.isEstimated)
+    #expect(price.input == 0.10 && price.output == 0.50)
+    #expect(abs(price.cacheRead - 0.01) < 1e-12)
+
+    // 提示词（新增输入 + 缓存写入 + 缓存读取）正好 10 万：第一档
+    let short = TokenCounts(input: 1, output: 1_000_000, cacheWrite5m: 50_000, cacheRead: 49_999)
+    #expect(abs(price.cost(short) - (0.0000001 + 0.00625 + 0.00049999 + 0.5)) < 1e-9)
+    // 超过 10 万：整次请求的每个 token 都按第二档
+    let long = TokenCounts(input: 1, output: 1_000_000, cacheWrite5m: 50_000, cacheRead: 50_000)
+    #expect(abs(price.cost(long) - (0.0000005 + 0.03125 + 0.0025 + 2.5)) < 1e-9)
+
+    var split = CategoryCosts()
+    split.add(long, price: price)
+    #expect(abs(split.input + split.output + split.cacheWrite + split.cacheRead - price.cost(long)) < 1e-9)
+
+    // 没有列出的 Haiku 型号按当前代（5.5）估价
+    #expect(PricingCatalog.info(for: "claude-haiku-6").price?.input == 0.10)
+    #expect(PricingCatalog.info(for: "claude-haiku-6").isEstimated)
+}
+
+@Test func sonnetFiveFiveHasItsOwnCacheReadPrice() {
+    let info = PricingCatalog.info(for: "us.anthropic.claude-sonnet-5-5")
+    #expect(info.displayName == "Sonnet 5.5")
+    #expect(info.price?.input == 2)
+    #expect(info.price?.output == 10)
+    #expect(info.price?.cacheRead == 0.10)
+    #expect(!info.isEstimated)
+}
+
 // MARK: - 时间窗口
 
 private var shanghai: Calendar {
@@ -262,6 +296,28 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(abs(snap.billing.dailyAverage(now: now) - 60.0 / 27.5) < 1e-9)
     #expect(abs((snap.today?.cost ?? 0) - 40) < 1e-9)
     #expect(snap.daily.count == 30)
+}
+
+@Test func haikuCategoriesAddUpToTheTotalAcrossTiers() {
+    let now = date("2026-10-08 12:00")
+    let t = now.timeIntervalSince1970
+    // 第一条提示词正好 10 万：第一档；第二条算上缓存读取是 100,001：整条按第二档
+    let short = UsageRecord(key: 1, time: t - 120, input: 100_000, output: 1_000, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0,
+                            session: 0, model: 0, webSearches: 0, flags: 0)
+    let long = UsageRecord(key: 2, time: t - 60, input: 1, output: 1_000, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 100_000,
+                           session: 0, model: 0, webSearches: 0, flags: 0)
+    let snap = UsageCalculator.snapshot(
+        of: IndexSnapshot(records: [short, long], models: ["claude-haiku-5-5"]),
+        settings: UsageSettings(billingAnchorDay: 1, calendar: shanghai), now: now
+    )
+    // 0.0105 + (0.0000005 + 0.0025 + 0.005)
+    #expect(abs(snap.billing.cost - 0.0180005) < 1e-12)
+    let c = snap.billing.categories
+    #expect(abs(c.input + c.output + c.cacheWrite + c.cacheRead - snap.billing.cost) < 1e-12)
+    #expect(abs(c.input - 0.0100005) < 1e-12)
+    #expect(abs(c.cacheRead - 0.005) < 1e-12)
+    // 缓存读取省下的钱：100,000 × (0.5 - 0.05) / 1e6
+    #expect(abs(c.savings - 0.045) < 1e-12)
 }
 
 // MARK: - 格式化

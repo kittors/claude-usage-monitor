@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Claude Haiku 5.5 is priced at the published $0.10 per million input tokens and $0.50 per million output tokens. A request whose prompt is over 100,000 tokens, counting cache writes and reads, pays the higher rate of $0.50 input and $2.50 output on all of its tokens.
+
+### Fixed
+
+- Claude Sonnet 5.5 has its own prices. It had been priced as Sonnet 5, which overstated cache reads at $0.20 per million tokens instead of $0.10.
+
 ## [1.4.1] - 2026-10-06
 
 ### Fixed

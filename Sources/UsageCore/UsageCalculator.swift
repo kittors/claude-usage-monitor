@@ -65,6 +65,26 @@ public struct DayUsage: Sendable, Equatable, Identifiable {
     public var id: Date { date }
 }
 
+/// 按计费类别拆开的费用（美元）。逐次请求用它自己的单价累加，和总额用的是同一套价格；
+/// 各项相加等于总额，但不含快速模式倍率和联网搜索费。
+public struct CategoryCosts: Sendable, Equatable {
+    public var input = 0.0
+    public var output = 0.0
+    public var cacheWrite = 0.0
+    public var cacheRead = 0.0
+    /// 缓存读取省下的钱：按原价输入计算，比缓存读取价多出来的部分
+    public var savings = 0.0
+
+    mutating func add(_ t: TokenCounts, price: ModelPrice) {
+        let p = price.tier(for: t)
+        input += Double(t.input) * p.input / 1e6
+        output += Double(t.output) * p.output / 1e6
+        cacheWrite += (Double(t.cacheWrite5m) * p.cacheWrite5m + Double(t.cacheWrite1h) * p.cacheWrite1h) / 1e6
+        cacheRead += Double(t.cacheRead) * p.cacheRead / 1e6
+        savings += Double(t.cacheRead) * (p.input - p.cacheRead) / 1e6
+    }
+}
+
 /// 一段时间（今天、本周或本月）里的统计。
 public struct PeriodUsage: Sendable, Equatable {
     public var start: Date
@@ -77,6 +97,8 @@ public struct PeriodUsage: Sendable, Equatable {
     public var tokens: TokenCounts
     public var requests: Int
     public var models: [ModelUsage]
+    /// 按计费类别拆开的费用，和 `cost` 用同一套单价
+    public var categories = CategoryCosts()
 
     /// 周期最后一天（含）
     public var lastDay: Date { end.addingTimeInterval(-1) }
@@ -221,11 +243,13 @@ public enum UsageCalculator {
         let to = lowerBound(records, interval.end.timeIntervalSince1970)
         var cost = 0.0
         var tokens = TokenCounts.zero
+        var categories = CategoryCosts()
         var byModel: [UInt16: ModelUsage] = [:]
         for i in from..<to {
             let r = records[i]
             cost += costs[i]
             tokens += r.tokens
+            if let price = infos[Int(r.model)].price { categories.add(r.tokens, price: price) }
             if byModel[r.model] == nil {
                 let info = infos[Int(r.model)]
                 byModel[r.model] = ModelUsage(
@@ -255,7 +279,7 @@ public enum UsageCalculator {
         return PeriodUsage(
             start: interval.start, end: interval.end, dayIndex: dayIndex, dayCount: max(1, dayCount),
             cost: cost, tokens: tokens, requests: to - from,
-            models: merged.values.sorted { $0.cost > $1.cost }
+            models: merged.values.sorted { $0.cost > $1.cost }, categories: categories
         )
     }
 

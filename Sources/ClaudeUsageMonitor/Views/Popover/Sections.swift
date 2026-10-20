@@ -517,7 +517,7 @@ private struct SpanFigures {
         var result: [CostSpan: SpanFigures] = [:]
         for span in CostSpan.allCases {
             guard let p = snapshot.period(span) else { continue }
-            let costs = CategoryCosts(models: p.models)
+            let costs = p.categories
             func column(_ tokens: Int64, _ cost: Double) -> TokenColumn.Figure {
                 TokenColumn.Figure(tokens: tokens, cost: cost, amount: Fmt.magnitude(tokens), money: money.whole(cost))
             }
@@ -832,23 +832,6 @@ private struct ModelList: View {
         }
         .font(.system(size: 11.5))
         .monospacedDigit()
-    }
-}
-
-/// 按计费类别拆分的费用
-struct CategoryCosts {
-    var input = 0.0, output = 0.0, cacheWrite = 0.0, cacheRead = 0.0, savings = 0.0
-
-    init(models: [ModelUsage]) {
-        for m in models {
-            guard let p = PricingCatalog.info(for: m.modelID).price else { continue }
-            let t = m.tokens
-            input += Double(t.input) * p.input / 1e6
-            output += Double(t.output) * p.output / 1e6
-            cacheWrite += (Double(t.cacheWrite5m) * p.cacheWrite5m + Double(t.cacheWrite1h) * p.cacheWrite1h) / 1e6
-            cacheRead += Double(t.cacheRead) * p.cacheRead / 1e6
-            savings += Double(t.cacheRead) * (p.input - p.cacheRead) / 1e6
-        }
     }
 }
 

@@ -28,24 +28,45 @@ public struct ModelPrice: Hashable, Sendable {
     public var cacheRead: Double
     /// `usage.speed == "fast"` 时的整体价格倍数
     public var fastMultiplier: Double
+    /// 提示词超过门槛时，整次请求改按这一档计价（Haiku 5.5）
+    public var longPrompt: LongPrompt?
+
+    /// 按提示词长度分档的另一档。缓存价仍按同样的倍率推导。
+    public struct LongPrompt: Hashable, Sendable {
+        /// 提示词 = 新增输入 + 缓存写入 + 缓存读取，超过这个 token 数
+        public var above: Int64
+        public var input: Double
+        public var output: Double
+    }
 
     /// 缓存写入按官方倍率推导：5 分钟 TTL = 1.25×，1 小时 TTL = 2×；
-    /// 缓存读取默认 0.1×，个别模型（Fable 5.1、Opus 5.5）有单独定价。
-    public init(input: Double, output: Double, cacheRead: Double? = nil, fastMultiplier: Double = 2) {
+    /// 缓存读取默认 0.1×，个别模型（Fable 5.1、Opus 5.5、Sonnet 5.5）有单独定价。
+    public init(
+        input: Double, output: Double, cacheRead: Double? = nil, fastMultiplier: Double = 2,
+        longPrompt: LongPrompt? = nil
+    ) {
         self.input = input
         self.output = output
         self.cacheWrite5m = input * 1.25
         self.cacheWrite1h = input * 2
         self.cacheRead = cacheRead ?? input * 0.1
         self.fastMultiplier = fastMultiplier
+        self.longPrompt = longPrompt
+    }
+
+    /// 这次请求按哪一档计价：提示词超过门槛时，整次请求的每个 token（包括前面的部分）都按长提示词单价。
+    public func tier(for t: TokenCounts) -> ModelPrice {
+        guard let long = longPrompt, t.prompt > long.above else { return self }
+        return ModelPrice(input: long.input, output: long.output, fastMultiplier: fastMultiplier)
     }
 
     public func cost(_ t: TokenCounts, fast: Bool = false) -> Double {
-        let micro = Double(t.input) * input
-            + Double(t.output) * output
-            + Double(t.cacheWrite5m) * cacheWrite5m
-            + Double(t.cacheWrite1h) * cacheWrite1h
-            + Double(t.cacheRead) * cacheRead
+        let p = tier(for: t)
+        let micro = Double(t.input) * p.input
+            + Double(t.output) * p.output
+            + Double(t.cacheWrite5m) * p.cacheWrite5m
+            + Double(t.cacheWrite1h) * p.cacheWrite1h
+            + Double(t.cacheRead) * p.cacheRead
         return micro / 1_000_000 * (fast ? fastMultiplier : 1)
     }
 }
@@ -62,7 +83,7 @@ public struct ModelInfo: Hashable, Sendable {
     public let contextWindow: Int
 }
 
-/// 官方 API 价目表（USD / 百万 token，数据截至 2026-06）。
+/// 官方 API 价目表（USD / 百万 token，2026-10-08 对照官方价目表核对）。
 public enum PricingCatalog {
     /// 每次 Web Search 服务端工具调用的费用（$10 / 1000 次）
     public static let webSearchCost = 0.01
@@ -86,12 +107,21 @@ public enum PricingCatalog {
         Entry(prefix: "claude-opus-4-5", price: ModelPrice(input: 5, output: 25), context: 200_000),
         Entry(prefix: "claude-opus-4-1", price: ModelPrice(input: 15, output: 75), context: 200_000),
         Entry(prefix: "claude-opus-4", price: ModelPrice(input: 15, output: 75), context: 200_000),
+        Entry(prefix: "claude-sonnet-5-5", price: ModelPrice(input: 2, output: 10, cacheRead: 0.10), context: 1_000_000),
         Entry(prefix: "claude-sonnet-5", price: ModelPrice(input: 2, output: 10), context: 1_000_000),
         Entry(prefix: "claude-sonnet-4-6", price: ModelPrice(input: 3, output: 15), context: 1_000_000),
         Entry(prefix: "claude-sonnet-4-5", price: ModelPrice(input: 3, output: 15), context: 200_000),
         Entry(prefix: "claude-sonnet-4", price: ModelPrice(input: 3, output: 15), context: 200_000),
         Entry(prefix: "claude-3-7-sonnet", price: ModelPrice(input: 3, output: 15), context: 200_000),
         Entry(prefix: "claude-3-5-sonnet", price: ModelPrice(input: 3, output: 15), context: 200_000),
+        Entry(
+            prefix: "claude-haiku-5-5",
+            price: ModelPrice(
+                input: 0.10, output: 0.50,
+                longPrompt: ModelPrice.LongPrompt(above: 100_000, input: 0.50, output: 2.50)
+            ),
+            context: 1_000_000
+        ),
         Entry(prefix: "claude-haiku-4-5", price: ModelPrice(input: 1, output: 5), context: 200_000),
         Entry(prefix: "claude-3-5-haiku", price: ModelPrice(input: 0.8, output: 4), context: 200_000),
         Entry(prefix: "claude-3-haiku", price: ModelPrice(input: 0.25, output: 1.25), context: 200_000),
@@ -102,9 +132,9 @@ public enum PricingCatalog {
     private static let familyFallback: [ModelFamily: Entry] = [
         .fable: entries.first { $0.prefix == "claude-fable-5-1" }!,
         .mythos: entries.first { $0.prefix == "claude-mythos-5-1" }!,
-        .opus: entries.first { $0.prefix == "claude-opus-5" }!,
-        .sonnet: entries.first { $0.prefix == "claude-sonnet-5" }!,
-        .haiku: entries.first { $0.prefix == "claude-haiku-4-5" }!,
+        .opus: entries.first { $0.prefix == "claude-opus-5-5" }!,
+        .sonnet: entries.first { $0.prefix == "claude-sonnet-5-5" }!,
+        .haiku: entries.first { $0.prefix == "claude-haiku-5-5" }!,
     ]
 
     private static let cacheLock = NSLock()

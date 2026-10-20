@@ -35,15 +35,19 @@ public struct OfficialUsage: Sendable, Equatable {
     public var sevenDaySonnet: OfficialLimit?
     public var sevenDayOpus: OfficialLimit?
     public var scoped: [ScopedLimit]
+    /// 额外用量眼下能不能接着付超出额度的部分（`extra_usage.is_enabled`）。为 true 时额度用完也不会停下；接口没有这一项时为 nil。
+    public var extraUsageEnabled: Bool?
     public var fetchedAt: Date
 
     public init(fiveHour: OfficialLimit? = nil, sevenDay: OfficialLimit? = nil, sevenDaySonnet: OfficialLimit? = nil,
-                sevenDayOpus: OfficialLimit? = nil, scoped: [ScopedLimit] = [], fetchedAt: Date = Date()) {
+                sevenDayOpus: OfficialLimit? = nil, scoped: [ScopedLimit] = [], extraUsageEnabled: Bool? = nil,
+                fetchedAt: Date = Date()) {
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
         self.sevenDaySonnet = sevenDaySonnet
         self.sevenDayOpus = sevenDayOpus
         self.scoped = scoped
+        self.extraUsageEnabled = extraUsageEnabled
         self.fetchedAt = fetchedAt
     }
 
@@ -63,6 +67,7 @@ public struct OfficialUsage: Sendable, Equatable {
             sevenDaySonnet: limit(raw.seven_day_sonnet),
             sevenDayOpus: limit(raw.seven_day_opus),
             scoped: scoped,
+            extraUsageEnabled: raw.extra_usage?.is_enabled,
             fetchedAt: fetchedAt
         )
     }
@@ -114,11 +119,24 @@ public struct OfficialUsage: Sendable, Equatable {
             }
         }
 
+        /// 只读开关，其余字段不用；格式变了也不影响限额本身的解析
+        struct ExtraUsage: Decodable {
+            let is_enabled: Bool?
+
+            init(from decoder: Decoder) throws {
+                let c = try? decoder.container(keyedBy: Key.self)
+                is_enabled = (try? c?.decodeIfPresent(Bool.self, forKey: .is_enabled)) ?? nil
+            }
+
+            private enum Key: String, CodingKey { case is_enabled }
+        }
+
         let five_hour: Limit?
         let seven_day: Limit?
         let seven_day_sonnet: Limit?
         let seven_day_opus: Limit?
         let limits: [Scoped]?
+        let extra_usage: ExtraUsage?
     }
 }
 

@@ -249,9 +249,11 @@ final class UsageStore {
     }
 
     /// 计费周期配置。重置时刻用官方每周限额（面板上的「周六 22:00」），还没同步过时用上次记下的时刻。
-    /// 另带上进行中的 5 小时窗口，用来推算数字涨一格要多少消耗（只决定查询时机）。
+    /// 另带上进行中的 5 小时窗口，用来推算数字涨一格要多少消耗（只决定查询时机）；
+    /// 以及每周限额的读数，预计到额度用完为止。
     func billingSettings() -> UsageSettings {
         var settings = prefs.usageSettings
+        settings.weeklyReading = weeklyReading
         if let reset = official.usage?.fiveHour?.resetsAt, reset > Date() { settings.fiveHourReset = reset }
         if let reset = official.usage?.weeklyReset() ?? prefs.weeklyResetAt {
             settings.weeklyReset = reset
@@ -263,6 +265,12 @@ final class UsageStore {
         return settings
     }
 
+    /// 用面板上显示的整数百分比：拿它和本机消耗心算，结果和预计一致
+    private var weeklyReading: WeeklyReading? {
+        guard let usage = official.usage, let week = usage.sevenDay else { return nil }
+        return WeeklyReading(utilization: Double(week.percent), at: usage.fetchedAt, overageCovered: usage.extraUsageEnabled == true)
+    }
+
     /// 已确定的重置时刻：当前官方数据优先，否则用上次同步记下的时刻
     var learnedResetClock: (hour: Int, minute: Int)? {
         if let clock = official.usage?.weeklyResetClock(calendar: .current) { return clock }
@@ -271,7 +279,9 @@ final class UsageStore {
     }
 
     func recompute(pulse: Bool = false) {
-        engine.compute(settings: billingSettings(), now: Date()) { [weak self] snap, files in
+        let settings = billingSettings()
+        computedReading = settings.weeklyReading
+        engine.compute(settings: settings, now: Date()) { [weak self] snap, files in
             DispatchQueue.main.async {
                 guard let self else { return }
                 // 已经在显示数据时，新数字滚动、进度条缓动过去；第一次出现不做动画
@@ -307,9 +317,14 @@ final class UsageStore {
             if let minute = parts.minute, prefs.billingAnchorMinute != minute { prefs.billingAnchorMinute = minute }
             if let second = parts.second, prefs.billingAnchorSecond != second { prefs.billingAnchorSecond = second }
         }
+        // 预计按每周限额封顶：读数变了（新的一次同步、关掉官方用量）就重算。还没算出过本机用量时，第一次计算会带上它
+        if snapshot != nil, weeklyReading != computedReading { recompute() }
         scheduleNextReset()
         onUpdate?()
     }
+
+    /// 上次重算时用的每周限额读数
+    @ObservationIgnored private var computedReading: WeeklyReading?
 
     private func observeOfficialSettings() {
         withObservationTracking {

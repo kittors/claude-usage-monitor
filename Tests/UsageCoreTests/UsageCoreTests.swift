@@ -278,6 +278,31 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(UsageCalculator.snapshot(of: index, settings: UsageSettings(calendar: shanghai), now: now).fiveHourCost == nil)
 }
 
+@Test func weeklyAllowanceUsesTheCostAtTheSync() throws {
+    let now = date("2026-10-20 17:31")
+    let sync = date("2026-10-20 17:00")
+    // 每条 $20：上一周 1 条，本周同步之前 3 条，同步之后 1 条
+    let times = ["2026-10-17 21:00", "2026-10-18 10:00", "2026-10-19 10:00", "2026-10-20 16:00"].map { date($0).timeIntervalSince1970 }
+    let index = IndexSnapshot(records: (times + [now.timeIntervalSince1970 - 60]).map { record($0) }, models: ["claude-opus-5-5"])
+    func allowance(_ reading: WeeklyReading?) -> WeeklyAllowance? {
+        let settings = UsageSettings(weeklyReset: date("2026-10-24 22:00"), weeklyReading: reading, calendar: shanghai)
+        return UsageCalculator.snapshot(of: index, settings: settings, now: now).weeklyAllowance
+    }
+    let a = try #require(allowance(WeeklyReading(utilization: 40, at: sync)))
+    #expect(a.start == date("2026-10-17 22:00"))
+    #expect(abs(a.syncedCost - 60) < 1e-9)
+    #expect(abs(a.spent - 80) < 1e-9)
+    // 60 对应 40%：花到 150 用完，还能花 70
+    #expect(abs(a.full - 150) < 1e-9)
+    #expect(abs(a.remaining - 70) < 1e-9)
+
+    // 额度用完后有额外用量接着付、百分比太小、上一周的读数、没有读数：都不封顶
+    #expect(allowance(WeeklyReading(utilization: 40, at: sync, overageCovered: true)) == nil)
+    #expect(allowance(WeeklyReading(utilization: 9, at: sync)) == nil)
+    #expect(allowance(WeeklyReading(utilization: 90, at: date("2026-10-17 21:30"))) == nil)
+    #expect(allowance(nil) == nil)
+}
+
 @Test func snapshotCoversBillingPeriodAndDays() {
     let now = date("2026-09-28 12:00")
     let t = now.timeIntervalSince1970
@@ -360,9 +385,27 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(usage.scoped.count == 1)
     #expect(usage.scoped.first?.modelName == "Fable")
     #expect(usage.scoped.first?.limit.resetsAt == Date(timeIntervalSince1970: 1_790_949_600))
+    #expect(usage.extraUsageEnabled == false)
     // 14:00 UTC = 上海 22:00，与面板「周六 22:00」一致；不用 5 小时窗口的时刻
     let clock = try #require(usage.weeklyResetClock(calendar: shanghai))
     #expect(clock.hour == 22 && clock.minute == 0)
+}
+
+@Test func decodesWhetherExtraUsageCoversTheLimit() throws {
+    let on = try OfficialUsage.decode(Data(#"{"seven_day":{"utilization":63},"extra_usage":{"is_enabled":true,"monthly_limit":5000}}"#.utf8))
+    #expect(on.extraUsageEnabled == true)
+    // 没有这一项、为 null、格式变了：都当作不知道，限额本身照常解析
+    let bodies = [
+        #"{"seven_day":{"utilization":63}}"#,
+        #"{"seven_day":{"utilization":63},"extra_usage":null}"#,
+        #"{"seven_day":{"utilization":63},"extra_usage":"on"}"#,
+        #"{"seven_day":{"utilization":63},"extra_usage":{"is_enabled":"yes"}}"#,
+    ]
+    for body in bodies {
+        let usage = try OfficialUsage.decode(Data(body.utf8))
+        #expect(usage.extraUsageEnabled == nil)
+        #expect(usage.sevenDay?.utilization == 63)
+    }
 }
 
 @Test func weeklyResetClockIgnoresFiveHourAndRoundsSubseconds() throws {

@@ -12,18 +12,71 @@ public struct UsageSettings: Sendable, Equatable {
     public var weeklyReset: Date?
     /// 进行中的 5 小时窗口的重置时间，窗口是它之前的 5 小时。没有进行中的窗口时为 nil。
     public var fiveHourReset: Date?
+    /// 上次同步时官方的每周限额（全部模型），用来让预计停在额度用完的地方。没有官方数据时为 nil。
+    public var weeklyReading: WeeklyReading?
     public var calendar: Calendar
 
     public init(billingAnchorDay: Int = 1, billingAnchorHour: Int = 0, billingAnchorMinute: Int = 0,
                 billingAnchorSecond: Int = 0, weeklyReset: Date? = nil, fiveHourReset: Date? = nil,
-                calendar: Calendar = .current) {
+                weeklyReading: WeeklyReading? = nil, calendar: Calendar = .current) {
         self.billingAnchorDay = billingAnchorDay
         self.billingAnchorHour = billingAnchorHour
         self.billingAnchorMinute = billingAnchorMinute
         self.billingAnchorSecond = billingAnchorSecond
         self.weeklyReset = weeklyReset
         self.fiveHourReset = fiveHourReset
+        self.weeklyReading = weeklyReading
         self.calendar = calendar
+    }
+}
+
+/// 官方每周限额某次同步的读数
+public struct WeeklyReading: Sendable, Equatable {
+    /// 已用百分比（0～100，可能超过 100）
+    public var utilization: Double
+    /// 取到这个百分比的时间
+    public var at: Date
+    /// 额度用完后由额外用量接着付，不会停下
+    public var overageCovered: Bool
+
+    public init(utilization: Double, at: Date, overageCovered: Bool = false) {
+        self.utilization = utilization
+        self.at = at
+        self.overageCovered = overageCovered
+    }
+}
+
+/// 每周限额折算成本机消耗：同步那一刻，本周的本机消耗对应官方的百分比，照这个比例，本机花到多少时额度用完。
+/// 官方百分比里还有其他设备和网页上的用量，按同样的比例继续，算出来的就是本机还能花到哪里。
+/// 只用来让预计停在额度用完的地方，限额区显示的百分比仍然只来自官方。
+public struct WeeklyAllowance: Sendable, Equatable {
+    /// 官方百分比只有整数，太小时一个百分点的误差就很大，不拿来推算
+    public static let minimumUtilization = 10.0
+
+    /// 本周窗口
+    public var start: Date
+    public var end: Date
+    /// 同步时官方的百分比（0～100），和那一刻本周的本机消耗
+    public var utilization: Double
+    public var syncedCost: Double
+    /// 本周到现在的本机消耗
+    public var spent: Double
+
+    /// 额度用完时本周的本机消耗
+    public var full: Double { syncedCost * 100 / utilization }
+    /// 本周还能花多少
+    public var remaining: Double { max(0, full - spent) }
+}
+
+/// 照现在的速度到周期结束一共多少
+public struct Projection: Sendable, Equatable {
+    public var cost: Double
+    /// 照这个速度，周期结束前每周额度第一次用完的时刻。用完之后到下次重置不再增加；额度够用时为 nil。
+    public var runsOut: Date?
+
+    public init(cost: Double, runsOut: Date? = nil) {
+        self.cost = cost
+        self.runsOut = runsOut
     }
 }
 
@@ -113,8 +166,45 @@ public struct PeriodUsage: Sendable, Equatable {
     public func projectedCost(now: Date) -> Double {
         guard dayCount == 1 else { return dailyAverage(now: now) * Double(dayCount) }
         let length = end.timeIntervalSince(start)
-        return cost * length / elapsed(now: now, atLeast: 6 * 3600)
+        return cost * length / elapsed(now: now, atLeast: Self.shortestDay)
     }
+
+    /// 照现在的速度到周期结束，并且每周额度用完就停到下次重置。
+    /// 从现在起按周切开：本周最多再花掉还剩的额度，之后每一周最多一整份。额度够用时就是 `projectedCost(now:)`。
+    public func projection(now: Date, allowance: WeeklyAllowance?) -> Projection {
+        let linear = projectedCost(now: now)
+        let elapsed = elapsed(now: now, atLeast: dayCount == 1 ? Self.shortestDay : 86_400)
+        guard let a = allowance, cost > 0, elapsed < end.timeIntervalSince(start) else { return Projection(cost: linear) }
+        // 和日均、按小时外推用同一个速度：开头不足一天（或 6 小时）时也按那么久算
+        let rate = cost / elapsed
+        var t = start.addingTimeInterval(elapsed)
+        var weekEnd = a.end
+        var left = a.remaining
+        while weekEnd <= t {
+            weekEnd = weekEnd.addingTimeInterval(LimitPace.weekWindow)
+            left = a.full
+        }
+        var total = cost
+        var runsOut: Date?
+        while t < end {
+            let segmentEnd = min(weekEnd, end)
+            let wanted = rate * segmentEnd.timeIntervalSince(t)
+            if wanted > left {
+                if runsOut == nil { runsOut = t.addingTimeInterval(left / rate) }
+                total += left
+            } else {
+                total += wanted
+            }
+            t = segmentEnd
+            weekEnd = weekEnd.addingTimeInterval(LimitPace.weekWindow)
+            left = a.full
+        }
+        guard let runsOut, total < linear else { return Projection(cost: linear) }
+        return Projection(cost: total, runsOut: runsOut)
+    }
+
+    /// 只有一天的周期，开头不足 6 小时按 6 小时算
+    private static let shortestDay: TimeInterval = 6 * 3600
 
     /// 周期已经过去的时间，至少按 `minimum` 算，最多到周期结束
     private func elapsed(now: Date, atLeast minimum: TimeInterval) -> TimeInterval {
@@ -132,6 +222,8 @@ public struct UsageSnapshot: Sendable, Equatable {
     public var day: PeriodUsage
     /// 本周。还没有每周限额的重置时间时为 nil，不用自然周代替。
     public var week: PeriodUsage?
+    /// 每周限额折算成本机消耗，各周期的预计按它封顶。没有本周的官方读数，或额度用完后有额外用量接着付时为 nil。
+    public var weeklyAllowance: WeeklyAllowance?
     /// 进行中的 5 小时窗口里的本机消耗。没有进行中的窗口时为 nil。
     public var fiveHourCost: Double?
     /// 最近 30 天（含今天），按日期升序
@@ -166,16 +258,18 @@ public enum UsageCalculator {
             second: settings.billingAnchorSecond, calendar: cal
         )
         let today = dayInterval(now: now, calendar: cal)
+        let week = settings.weeklyReset.map { reset in
+            summarize(
+                records: records, costs: costs, infos: infos,
+                interval: weeklyInterval(now: now, reset: reset), calendar: cal, now: now
+            )
+        }
         return UsageSnapshot(
             generatedAt: now,
             billing: summarize(records: records, costs: costs, infos: infos, interval: month, calendar: cal, now: now),
             day: summarize(records: records, costs: costs, infos: infos, interval: today, calendar: cal, now: now),
-            week: settings.weeklyReset.map { reset in
-                summarize(
-                    records: records, costs: costs, infos: infos,
-                    interval: weeklyInterval(now: now, reset: reset), calendar: cal, now: now
-                )
-            },
+            week: week,
+            weeklyAllowance: week.flatMap { allowance(records: records, costs: costs, week: $0, reading: settings.weeklyReading) },
             fiveHourCost: settings.fiveHourReset.map { reset in
                 let from = lowerBound(records, reset.timeIntervalSince1970 - fiveHourWindow)
                 let to = lowerBound(records, reset.timeIntervalSince1970)
@@ -233,6 +327,19 @@ public enum UsageCalculator {
         let steps = floor(now.timeIntervalSince(reset) / week)
         let start = reset.addingTimeInterval(steps * week)
         return DateInterval(start: start, end: start.addingTimeInterval(week))
+    }
+
+    /// 本周的官方读数折算成本机消耗。读数必须是这一周里取到的：重置之后、还没同步时，上一周的百分比不算。
+    /// 本机消耗按读数那一刻之前的记录算，和百分比是同一时刻，之后新增的消耗不会让额度看起来变大。
+    static func allowance(records: [UsageRecord], costs: [Double], week: PeriodUsage, reading: WeeklyReading?) -> WeeklyAllowance? {
+        guard let r = reading, !r.overageCovered, r.utilization.isFinite,
+              r.utilization >= WeeklyAllowance.minimumUtilization,
+              r.at >= week.start, r.at < week.end else { return nil }
+        let from = lowerBound(records, week.start.timeIntervalSince1970)
+        let to = lowerBound(records, r.at.timeIntervalSince1970)
+        let synced = costs[from..<max(from, to)].reduce(0, +)
+        guard synced > 0 else { return nil }
+        return WeeklyAllowance(start: week.start, end: week.end, utilization: r.utilization, syncedCost: synced, spent: week.cost)
     }
 
     static func summarize(

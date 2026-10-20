@@ -769,6 +769,8 @@ final class OfficialUsageService {
         var sevenDaySonnet: Item?
         var sevenDayOpus: Item?
         var scoped: [Scoped]
+        /// 旧版本写的缓存里没有这一项
+        var extraUsageEnabled: Bool?
     }
 
     private func loadCachedUsage() {
@@ -787,6 +789,7 @@ final class OfficialUsageService {
             scoped: cache.scoped.map {
                 ScopedLimit(modelName: $0.modelName, limit: OfficialLimit(utilization: $0.utilization, resetsAt: $0.resetsAt))
             },
+            extraUsageEnabled: cache.extraUsageEnabled,
             fetchedAt: cache.fetchedAt
         )
         if state == .connecting || state == .disabled { state = .connected }
@@ -804,7 +807,8 @@ final class OfficialUsageService {
             sevenDayOpus: item(usage.sevenDayOpus),
             scoped: usage.scoped.map {
                 UsageCache.Scoped(modelName: $0.modelName, utilization: $0.limit.utilization, resetsAt: $0.limit.resetsAt)
-            }
+            },
+            extraUsageEnabled: usage.extraUsageEnabled
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970

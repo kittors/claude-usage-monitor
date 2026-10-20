@@ -125,6 +125,79 @@ private func period(days: Int, cost: Double) -> PeriodUsage {
     #expect(abs(day.projectedCost(now: after(30)) - 60) < 1e-9)
 }
 
+// MARK: - 预计按每周额度封顶
+
+private func allowance(start: Date = now, utilization: Double, synced: Double, spent: Double) -> WeeklyAllowance {
+    WeeklyAllowance(start: start, end: start.addingTimeInterval(7 * 86_400), utilization: utilization, syncedCost: synced, spent: spent)
+}
+
+@Test func weekProjectionStopsWhereTheLimitRunsOut() throws {
+    // 过去 2 天花了 2000，照日均 1000 一周是 7000；同步时 2000 对应 62.5%，额度用完时是 3200
+    let week = period(days: 7, cost: 2000)
+    let a = allowance(utilization: 62.5, synced: 2000, spent: 2000)
+    #expect(abs(a.full - 3200) < 1e-9)
+    #expect(abs(a.remaining - 1200) < 1e-9)
+    let p = week.projection(now: after(48), allowance: a)
+    #expect(abs(p.cost - 3200) < 1e-9)
+    let runsOut = try #require(p.runsOut)
+    // 还能花 1200，照日均 1000 再过 1.2 天；和只看官方百分比一样：2 天用了 62.5%，第 3.2 天用完
+    #expect(abs(runsOut.timeIntervalSince(after(48)) - 1.2 * 86_400) < 1e-6)
+    #expect(abs(runsOut.timeIntervalSince(now) - 2 / 0.625 * 86_400) < 1e-6)
+}
+
+@Test func projectionWithinTheLimitIsTheDailyAverage() {
+    // 2 天花了 600，照日均 300 一周 2100，额度 3200 够用
+    let week = period(days: 7, cost: 600)
+    let p = week.projection(now: after(48), allowance: allowance(utilization: 18.75, synced: 600, spent: 600))
+    #expect(p.runsOut == nil)
+    #expect(abs(p.cost - week.projectedCost(now: after(48))) < 1e-9)
+    #expect(week.projection(now: after(48), allowance: nil) == Projection(cost: 2100))
+}
+
+@Test func earlyProjectionCountsAWholeDayLikeTheAverage() throws {
+    // 开头 2 小时花了 700：和日均一样按一天算，额度 2800，第 4 天用完
+    let week = period(days: 7, cost: 700)
+    let p = week.projection(now: after(2), allowance: allowance(utilization: 25, synced: 700, spent: 700))
+    #expect(abs(p.cost - 2800) < 1e-9)
+    #expect(abs(try #require(p.runsOut).timeIntervalSince(now) - 4 * 86_400) < 1e-6)
+}
+
+@Test func monthProjectionStopsEachWeekAtItsLimit() throws {
+    // 30 天过去 10 天，花了 4000（日均 400）。本周从第 7 天开始，同步时花了 1500、对应 50%：每周额度 3000
+    let month = period(days: 30, cost: 4000)
+    let a = allowance(start: after(7 * 24), utilization: 50, synced: 1500, spent: 1500)
+    let p = month.projection(now: after(10 * 24), allowance: a)
+    // 本周还有 4 天想花 1600，只剩 1500；之后两整周各 2800，不到 3000；最后 2 天 800
+    #expect(abs(p.cost - (4000 + 1500 + 2800 + 2800 + 800)) < 1e-9)
+    #expect(abs(try #require(p.runsOut).timeIntervalSince(after(10 * 24)) - 3.75 * 86_400) < 1e-6)
+
+    // 日均 600 时之后的整周也到顶
+    let busy = period(days: 30, cost: 6000)
+    let q = busy.projection(now: after(10 * 24), allowance: a)
+    #expect(abs(q.cost - (6000 + 1500 + 3000 + 3000 + 1200)) < 1e-9)
+    #expect(abs(try #require(q.runsOut).timeIntervalSince(after(10 * 24)) - 2.5 * 86_400) < 1e-6)
+}
+
+@Test func dayProjectionResumesAfterTheWeeklyReset() throws {
+    // 过去 12 小时花了 600（每小时 50）。每周额度第 20 小时重置，本周只剩 200
+    let day = period(days: 1, cost: 600)
+    let a = allowance(start: after(20 - 7 * 24), utilization: 95, synced: 3800, spent: 3800)
+    let p = day.projection(now: after(12), allowance: a)
+    // 重置前 8 小时想花 400，只剩 200，第 16 小时用完；重置后 4 小时是新的一周，200
+    #expect(abs(p.cost - (600 + 200 + 200)) < 1e-9)
+    #expect(try #require(p.runsOut) == after(16))
+}
+
+@Test func projectionHoldsOnceTheLimitIsUsedUp() {
+    // 官方已经 100%：本周到重置前不再增加
+    let week = period(days: 7, cost: 3000)
+    let p = week.projection(now: after(96), allowance: allowance(utilization: 100, synced: 3000, spent: 3000))
+    #expect(abs(p.cost - 3000) < 1e-9)
+    #expect(p.runsOut == after(96))
+    // 周期已经结束：就是实际总额
+    #expect(week.projection(now: after(8 * 24), allowance: allowance(utilization: 100, synced: 3000, spent: 3000)) == Projection(cost: 3000))
+}
+
 @Test func roundingKeepsEachPartClose() {
     // 已经是目标单位：各自取整，差的那一份给小数最大的
     #expect(Apportion.rounded([12_000.2, 345.4], total: 12_346) == [12_000, 346])

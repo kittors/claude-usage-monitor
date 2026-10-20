@@ -6,12 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-20
+
 ### Added
 
+- When the current pace would use up the weekly limit before the period ends, the line under the amount in Spend says when, such as "Day 3 of 7 · $716/day · runs out Thu". Point at the amount for the time and the numbers behind it.
 - Claude Haiku 5.5 is priced at the published $0.10 per million input tokens and $0.50 per million output tokens. A request whose prompt is over 100,000 tokens, counting cache writes and reads, pays the higher rate of $0.50 input and $2.50 output on all of its tokens.
 
 ### Fixed
 
+- The projection next to the amount in Spend stops at the weekly limit. It was the daily average times the days in the period, so a fast week could project $5,012 when the limit runs out at about $3,200. The limit is now converted into spend on this Mac at the last sync: this week's spend at that moment divided by the official weekly percentage, for example $2,011 at 63%, which runs out at about $3,193. At the current pace the projection stops there until the weekly reset, and This month and Today stop at each week's limit the same way. Nothing is capped when extra usage pays past the limit, or while the weekly percentage is under 10%, where one point is too coarse to go on.
 - Claude Sonnet 5.5 has its own prices. It had been priced as Sonnet 5, which overstated cache reads at $0.20 per million tokens instead of $0.10.
 
 ## [1.4.1] - 2026-10-06

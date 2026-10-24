@@ -162,13 +162,18 @@ private func allowance(start: Date = now, utilization: Double, synced: Double, s
     let month = period(days: 30, cost: 4000)
     let a = allowance(start: after(7 * 24), utilization: 50, synced: 1500, spent: 1500)
     let p = try #require(month.projection(now: after(10 * 24), allowance: a))
-    // 本周剩下的 1500 都在周期里；之后两整周各 3000；最后一周只有 2 天在周期里，按 2/7
-    #expect(abs(p.cost - (4000 + 1500 + 3000 + 3000 + 3000.0 * 2 / 7)) < 1e-9)
+    // 本周剩下的 1500 都在周期里；之后两整周各 3000；最后一周只有 2 天在周期里，按 2/7。
+    // 分几步加：一长串字面量相加，CI 上的编译器推断不出类型
+    var expected = 4000.0
+    expected += 1500
+    expected += 3000 * 2
+    expected += 3000.0 * 2 / 7
+    #expect(abs(p.cost - expected) < 1e-9)
     #expect(p.runsOut == nil)
-    // 周期在本周中间结束：本周还剩的额度按落在周期里的时间折算
+    // 周期在本周中间结束：本周还剩的 1500 按落在周期里的 2/4 天折算
     let short = period(days: 12, cost: 4000)
     let q = try #require(short.projection(now: after(10 * 24), allowance: a))
-    #expect(abs(q.cost - (4000 + 1500.0 * 2 / 4)) < 1e-9)
+    #expect(abs(q.cost - 4750) < 1e-9)
 }
 
 @Test func dayProjectionResumesAfterTheWeeklyReset() throws {

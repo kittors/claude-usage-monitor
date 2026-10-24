@@ -97,7 +97,8 @@ private func line(id: String, req: String, output: Int, time: String = "2026-09-
     #expect(loaded.sessions == index.sessions)
     // 加载后第一次扫描：最近改过的文件从头再读一遍补上请求的计时，记录去重后不变；之后不再读没变的文件
     let primed = loaded.scan(roots: [dir])
-    #expect(primed.recordsAdded == 0 && primed.recordsUpdated == 0)
+    #expect(primed.recordsAdded == 0)
+    #expect(primed.recordsUpdated == 0)
     #expect(loaded.records == index.records)
     #expect(loaded.scan(roots: [dir]).filesParsed == 0)
 }
@@ -296,18 +297,22 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(a.start == date("2026-10-17 22:00"))
     #expect(abs(a.syncedCost - 60) < 1e-9)
     #expect(abs(a.spent - 80) < 1e-9)
-    #expect(a.syncedAt == sync && !a.borrowed)
+    #expect(a.syncedAt == sync)
+    #expect(!a.borrowed)
     // 60 对应 40%：花到 150 用满，还能花 70
     #expect(abs(a.full - 150) < 1e-9)
     #expect(abs(a.remaining - 70) < 1e-9)
 
     // 百分比太小：先用本周的；有之前算准的比例时借用它
     let small = try #require(allowance(WeeklyReading(utilization: 9, at: sync)))
-    #expect(!small.borrowed && small.utilization == 9)
+    #expect(!small.borrowed)
+    #expect(small.utilization == 9)
     let earlier = AllowanceBasis(utilization: 63, syncedCost: 2013, at: date("2026-10-15 12:00"))
     let borrowed = try #require(allowance(WeeklyReading(utilization: 9, at: sync), earlier: earlier))
-    #expect(borrowed.borrowed && borrowed.syncedAt == earlier.at)
-    #expect(abs(borrowed.full - earlier.full) < 1e-9 && abs(borrowed.spent - 80) < 1e-9)
+    #expect(borrowed.borrowed)
+    #expect(borrowed.syncedAt == earlier.at)
+    #expect(abs(borrowed.full - earlier.full) < 1e-9)
+    #expect(abs(borrowed.spent - 80) < 1e-9)
     // 本周的百分比够大时不借用
     #expect(allowance(WeeklyReading(utilization: 40, at: sync), earlier: earlier)?.borrowed == false)
     // 上一周的读数、没有读数：只能借用

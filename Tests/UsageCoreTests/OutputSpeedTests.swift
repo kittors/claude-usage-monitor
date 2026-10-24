@@ -19,16 +19,24 @@ private let interrupted = #"{"parentUuid":"p","isSidechain":false,"type":"user",
 
 private let synthetic = #"{"parentUuid":"p","isSidechain":false,"type":"assistant","uuid":"u3","timestamp":"2026-10-24T15:00:30.000Z","message":{"id":"x","model":"<synthetic>","role":"assistant","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error"}]},"isApiErrorMessage":true,"sessionId":"s1"}"#
 
-private let t0 = TokenParser.parseTimestamp("2026-10-24T15:00:00.000Z")!
+/// 测试里的时间都放在十分钟前：索引只留最近两小时的计时，写死的日期过一阵就会被当成过期清掉
+private let t0 = (Date().timeIntervalSince1970 - 600).rounded()
+
+/// t0 之后多少秒，写成会话记录里的时间格式
+private func at(_ seconds: Double) -> String {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f.string(from: Date(timeIntervalSince1970: t0 + seconds))
+}
 
 // MARK: - 解析
 
 @Test func parsesRequestStartsAndEnds() throws {
     let blob = #"{"type":"api-request-blob","hash":"h","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"sessionId":"s1"}"#
     let body = [
-        request("r1", at: "2026-10-24T15:00:00.000Z"),
+        request("r1", at: at(0)),
         blob,
-        block("m1", ref: "r1", at: "2026-10-24T15:00:12.500Z", output: 900),
+        block("m1", ref: "r1", at: at(12.5), output: 900),
         interrupted,
         synthetic,
     ].joined(separator: "\n") + "\n"
@@ -76,7 +84,7 @@ private func append(_ lines: [String], to url: URL) throws {
     let index = UsageIndex(sourceSignature: "test")
 
     // 请求发出，回复还没写进来：算作生成中
-    try append([request("r1", at: "2026-10-24T15:00:00.000Z")], to: file)
+    try append([request("r1", at: at(0))], to: file)
     var stats = index.scan(roots: [dir])
     #expect(stats.timingsChanged)
     #expect(index.pending.values.map(\.id) == ["r1"])
@@ -84,9 +92,9 @@ private func append(_ lines: [String], to url: URL) throws {
 
     // 整条回复一起写进来：思考、两次工具调用各一行
     try append([
-        block("m1", ref: "r1", at: "2026-10-24T15:00:08.000Z", output: 1200),
-        block("m1", ref: "r1", at: "2026-10-24T15:00:09.000Z", output: 1200, kind: "tool_use"),
-        block("m1", ref: "r1", at: "2026-10-24T15:00:10.000Z", output: 1200, kind: "tool_use"),
+        block("m1", ref: "r1", at: at(8), output: 1200),
+        block("m1", ref: "r1", at: at(9), output: 1200, kind: "tool_use"),
+        block("m1", ref: "r1", at: at(10), output: 1200, kind: "tool_use"),
     ], to: file)
     stats = index.scan(roots: [dir])
     #expect(stats.timingsChanged)
@@ -109,16 +117,16 @@ private func append(_ lines: [String], to url: URL) throws {
     let file = dir.appendingPathComponent("s1.jsonl")
     let index = UsageIndex(sourceSignature: "test")
 
-    try append([request("r1", at: "2026-10-24T15:00:00.000Z"), interrupted], to: file)
+    try append([request("r1", at: at(0)), interrupted], to: file)
     index.scan(roots: [dir])
     #expect(index.pending.isEmpty)
 
-    try append([request("r2", at: "2026-10-24T15:01:00.000Z"), synthetic], to: file)
+    try append([request("r2", at: at(60)), synthetic], to: file)
     index.scan(roots: [dir])
     #expect(index.pending.isEmpty)
 
     // 出错重试：同一个文件里新发的请求替换掉旧的
-    try append([request("r3", at: "2026-10-24T15:02:00.000Z"), request("r4", at: "2026-10-24T15:02:05.000Z")], to: file)
+    try append([request("r3", at: at(120)), request("r4", at: at(125))], to: file)
     index.scan(roots: [dir])
     #expect(index.pending.values.map(\.id) == ["r4"])
     #expect(index.timings.isEmpty)
@@ -127,7 +135,7 @@ private func append(_ lines: [String], to url: URL) throws {
 @Test func repliesWithoutRequestLinesAreUntimed() throws {
     let dir = try tempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
-    try append([block("m1", ref: nil, at: "2026-10-24T15:00:08.000Z", output: 500)], to: dir.appendingPathComponent("s1.jsonl"))
+    try append([block("m1", ref: nil, at: at(8), output: 500)], to: dir.appendingPathComponent("s1.jsonl"))
     let index = UsageIndex(sourceSignature: "test")
     index.scan(roots: [dir])
     #expect(index.records.count == 1)
@@ -170,6 +178,16 @@ private func sample(_ id: UInt64, end: Double, duration: Double, output: Int, mo
     TimedRequest(id: id, model: model, start: end - duration, end: end, output: output)
 }
 
+/// 一串请求：第 i 个在 i × gap 秒写完。用循环拼：写成一行 map，CI 上的编译器推断不出类型
+private func series(_ count: Int, gap: Double, duration: (Int) -> Double, output: (Int) -> Int) -> [TimedRequest] {
+    var requests: [TimedRequest] = []
+    for i in 0..<count {
+        let end = Double(i) * gap
+        requests.append(sample(UInt64(i), end: end, duration: duration(i), output: output(i)))
+    }
+    return requests
+}
+
 @Test func rateWeighsByTokens() throws {
     // 一次长回复 2000 tokens / 20 秒，一次短回复 100 tokens / 10 秒（大部分时间在等第一个字）
     let requests = [sample(1, end: 100, duration: 20, output: 2000), sample(2, end: 200, duration: 10, output: 100)]
@@ -184,21 +202,22 @@ private func sample(_ id: UInt64, end: Double, duration: Double, output: Int, mo
 }
 
 @Test func curveEndsAtTheHeadlineNumber() throws {
-    let requests = (0..<40).map { i in sample(UInt64(i), end: Double(i) * 45, duration: 10 + Double(i % 7), output: 300 + i * 37) }
+    let requests = series(40, gap: 45, duration: { 10 + Double($0 % 7) }, output: { 300 + $0 * 37 })
     let now = 40.0 * 45
     let curve = OutputSpeed.curve(requests, from: now - OutputSpeed.span, to: now, count: 161)
     #expect(curve.count == 161)
     let headline = try #require(OutputSpeed.rate(requests, from: now - OutputSpeed.recent, to: now))
     #expect(curve.last == headline.tokensPerSecond)
     // 一开始没有请求
-    #expect(curve.first == .some(nil))
+    let first = try #require(curve.first)
+    #expect(first == nil)
 }
 
 @Test func ceilingKeepsMostPointsInside() {
     #expect(OutputSpeed.ceiling([]) == 150)
-    let opus = (0..<20).map { sample(UInt64($0), end: Double($0), duration: 10, output: 600 + $0 * 20) }
+    let opus = series(20, gap: 1, duration: { _ in 10 }, output: { 600 + $0 * 20 })
     #expect(OutputSpeed.ceiling(opus) == 150)
-    let haiku = (0..<20).map { sample(UInt64($0), end: Double($0), duration: 10, output: 2000 + $0 * 30) }
+    let haiku = series(20, gap: 1, duration: { _ in 10 }, output: { 2000 + $0 * 30 })
     #expect(OutputSpeed.ceiling(haiku) == 300)
     #expect(OutputSpeed.gridline(below: 150) == 100)
     #expect(OutputSpeed.gridline(below: 300) == 200)

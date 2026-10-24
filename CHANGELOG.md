@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.6.0] - 2026-10-25
+## [1.6.1] - 2026-10-25
 
 ### Added
 
@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The projection next to the amount in Spend is now what this Mac spends with the weekly limit fully used, however fast the week goes: this week's spend at the last sync divided by the official weekly percentage. Early in a week it had counted the first hours as a whole day and multiplied by seven, so two hours that cost $35 projected $245. This month adds every remaining week used in full, and Today still projects at today's pace. The line under the amount shows what is left, such as "Day 1 of 7 · $2,792 left", so the two numbers add up.
 - While this week's percentage is under 10%, the projection borrows the last ratio taken at 10% or more, or uses this week's own reading until there is one, because a small whole-number percentage is rough. Extra usage no longer changes the projection.
+
+## [1.6.0] - 2026-10-25 [YANKED]
+
+Tagged but never published: its tests did not build with the Swift 6.1 that makes releases. Everything in it ships in 1.6.1.
 
 ## [1.5.0] - 2026-10-20
 

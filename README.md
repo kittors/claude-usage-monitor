@@ -73,7 +73,7 @@ Confirms the exit Anthropic sees before every request, pauses in mainland China,
 <td valign="top">
 
 **Spend you can read**<br>
-API-equivalent cost for this week, the billing month, or today, with a projected total at the current pace that stops where the weekly limit runs out, the token mix, cache savings, a per-model split, and a 14-day trend.
+API-equivalent cost for this week, the billing month, or today, with a projected total that for the week and the month assumes the weekly limit is fully used, the token mix, cache savings, a per-model split, and a 14-day trend. Output speed shows each model's tokens per second over the last 5 minutes and the last hour.
 
 </td>
 <td valign="top">

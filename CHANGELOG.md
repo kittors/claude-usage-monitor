@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-25
+
+### Added
+
+- Output speed. A new section in the panel shows how fast replies come in, in tokens per second over the last 5 minutes, with a line of how that moved over the last hour. While a request is waiting for its reply, the section title says how long it has been generating. A reply's speed is its output tokens, thinking included, divided by the time from sending the request to the end of the reply, so it includes the queue and the wait for the first token. Replies are averaged by tokens, so sessions running side by side don't add up and short replies barely move it. Speeds are kept per model: the panel follows the model with the most output in the last hour, and when more than one was used, clicking the model name switches. It needs Claude Code 2.1.304 or later, which records when each request is sent.
+- Settings › Display › Output speed can plot every reply in the last hour instead of the line, or hide the section.
+- Output speed (TOK/S) can be added to the menu bar values. It is off by default.
+
+### Changed
+
+- The projection next to the amount in Spend is now what this Mac spends with the weekly limit fully used, however fast the week goes: this week's spend at the last sync divided by the official weekly percentage. Early in a week it had counted the first hours as a whole day and multiplied by seven, so two hours that cost $35 projected $245. This month adds every remaining week used in full, and Today still projects at today's pace. The line under the amount shows what is left, such as "Day 1 of 7 · $2,792 left", so the two numbers add up.
+- While this week's percentage is under 10%, the projection borrows the last ratio taken at 10% or more, or uses this week's own reading until there is one, because a small whole-number percentage is rough. Extra usage no longer changes the projection.
+
 ## [1.5.0] - 2026-10-20
 
 ### Added

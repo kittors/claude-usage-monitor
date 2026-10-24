@@ -63,6 +63,8 @@ public struct ScanStats: Sendable {
     public var duration: TimeInterval = 0
     public var changed: Bool { recordsAdded > 0 || recordsUpdated > 0 || titlesChanged }
     public var titlesChanged = false
+    /// 请求计时或正在等回复的请求有变化，输出速度要重画。不影响费用
+    public var timingsChanged = false
 }
 
 /// 增量索引：维护所有请求记录（全局去重）、会话表、模型表与文件游标。
@@ -78,6 +80,20 @@ public final class UsageIndex: @unchecked Sendable {
     private var modelIndex: [String: UInt16] = [:]
     private var sessionIndex: [String: UInt32] = [:]
     private var cursors: [String: FileCursor] = [:]
+
+    /// 最近完成的请求的计时，和记录一样按 `message.id + requestId` 去重。只留最近一段时间，不写进磁盘缓存
+    public private(set) var timings: [UInt64: RequestTiming] = [:]
+    /// 发出过的请求：`api-request` 的 id → 发出时刻。回复写进来时按 `requestRef` 找到它
+    private var starts: [String: RequestStart] = [:]
+    /// 每个会话文件里正在等回复的请求。同一个文件里的请求一个接一个，不会并行
+    public private(set) var pending: [String: RequestStart] = [:]
+    /// 最近一条没有发出时刻的回复（Claude Code 2.1.304 以前没有 `api-request` 行），用来说明为什么算不出速度
+    public private(set) var lastUntimed: Double?
+    /// 计时不进磁盘缓存：启动后第一次扫描时，最近改过的文件要从头再读一遍
+    private var timingsPrimed = false
+
+    /// 计时留多久。图表只画最近 1 小时，多留一些给刚启动时的回填
+    public static let timingRetention: TimeInterval = 2 * 3600
 
     public init(sourceSignature: String) {
         self.sourceSignature = sourceSignature
@@ -104,9 +120,14 @@ public final class UsageIndex: @unchecked Sendable {
 
         struct Job { let entry: FileEntry; let start: Int64 }
         var jobs: [Job] = []
+        // 启动后第一次扫描：最近改过的文件从头读，补上请求的计时（去重保证不会重复计数）
+        let primeSince = timingsPrimed ? Double.infinity : Date().timeIntervalSince1970 - Self.timingRetention
+        timingsPrimed = true
         for entry in files {
             let path = entry.url.path
-            if let cursor = cursors[path] {
+            if entry.mtime >= primeSince {
+                jobs.append(Job(entry: entry, start: 0))
+            } else if let cursor = cursors[path] {
                 if cursor.inode == entry.inode, cursor.size == entry.size, cursor.mtime == entry.mtime { continue }
                 if cursor.inode == entry.inode, entry.size >= cursor.offset {
                     jobs.append(Job(entry: entry, start: cursor.offset))
@@ -121,6 +142,10 @@ public final class UsageIndex: @unchecked Sendable {
         // 已删除的文件只移除游标，历史记录保留在索引里
         let alive = Set(files.map(\.url.path))
         for path in cursors.keys where !alive.contains(path) { cursors.removeValue(forKey: path) }
+        for path in pending.keys where !alive.contains(path) {
+            pending.removeValue(forKey: path)
+            stats.timingsChanged = true
+        }
 
         guard !jobs.isEmpty else {
             stats.duration = Date().timeIntervalSince(began)
@@ -153,6 +178,7 @@ public final class UsageIndex: @unchecked Sendable {
             stats.filesParsed += 1
             stats.bytesRead += result.bytesRead
             stats.linesParsed += result.linesParsed
+            let path = job.entry.url.path
             for event in result.events {
                 switch event {
                 case .usage(let usage):
@@ -161,21 +187,62 @@ public final class UsageIndex: @unchecked Sendable {
                     case .updated: stats.recordsUpdated += 1
                     case .unchanged: break
                     }
+                    if recordTiming(usage, file: path) { stats.timingsChanged = true }
                 case .title(let sid, let title):
                     let idx = internSession(sid)
                     if sessions[Int(idx)].title != title {
                         sessions[Int(idx)].title = title
                         stats.titlesChanged = true
                     }
+                case .requestStarted(let start):
+                    starts[start.id] = start
+                    pending[path] = start
+                    stats.timingsChanged = true
+                case .requestEnded:
+                    if pending.removeValue(forKey: path) != nil { stats.timingsChanged = true }
                 }
             }
-            cursors[job.entry.url.path] = FileCursor(
+            cursors[path] = FileCursor(
                 size: job.entry.size, mtime: job.entry.mtime, inode: job.entry.inode, offset: result.endOffset
             )
         }
 
+        let cutoff = Date().timeIntervalSince1970 - Self.timingRetention
+        timings = timings.filter { $0.value.end >= cutoff }
+        starts = starts.filter { $0.value.time >= cutoff }
+        pending = pending.filter { $0.value.time >= cutoff }
+
         stats.duration = Date().timeIntervalSince(began)
         return stats
+    }
+
+    /// 回复写进来时，按 `requestRef` 找到请求发出的时刻，记下这次请求的计时。返回计时有没有变化
+    private func recordTiming(_ u: ParsedUsage, file: String) -> Bool {
+        guard let ref = u.requestRef else {
+            lastUntimed = max(lastUntimed ?? 0, u.time)
+            return false
+        }
+        var changed = false
+        if pending[file]?.id == ref {
+            pending.removeValue(forKey: file)
+            changed = true
+        }
+        guard let start = starts[ref], u.time >= start.time else { return changed }
+        if var timing = timings[u.key] {
+            // 同一次回复的每一块各写一行：结束取最后一块写完的时刻，输出取最终值
+            let end = max(timing.end, u.time)
+            let output = max(timing.output, u.tokens.output)
+            guard end != timing.end || output != timing.output else { return changed }
+            timing.end = end
+            timing.output = output
+            timings[u.key] = timing
+        } else {
+            timings[u.key] = RequestTiming(
+                key: u.key, start: start.time, end: u.time, output: u.tokens.output,
+                model: internModel(u.model), isFast: u.isFast, isSidechain: u.isSidechain
+            )
+        }
+        return true
     }
 
     enum MergeResult { case added, updated, unchanged }

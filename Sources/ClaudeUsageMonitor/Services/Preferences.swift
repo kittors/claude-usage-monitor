@@ -53,6 +53,8 @@ enum MenuBarItem: Hashable, Identifiable {
     case todayCost
     case weekCost
     case monthCost
+    /// 近 5 分钟的输出速度（tok/s），和面板上的大数字相同
+    case speed
 
     var id: String { rawValue }
 
@@ -64,6 +66,7 @@ enum MenuBarItem: Hashable, Identifiable {
         case .todayCost: "today"
         case .weekCost: "week"
         case .monthCost: "cycle"
+        case .speed: "speed"
         }
     }
 
@@ -74,6 +77,7 @@ enum MenuBarItem: Hashable, Identifiable {
         case "today": self = .todayCost
         case "week": self = .weekCost
         case "cycle": self = .monthCost
+        case "speed": self = .speed
         default:
             guard rawValue.hasPrefix("model:"), rawValue.count > 6 else { return nil }
             self = .model(String(rawValue.dropFirst(6)))
@@ -89,6 +93,7 @@ enum MenuBarItem: Hashable, Identifiable {
         case .todayCost: L10n.tNow("今日费用", "Today's cost")
         case .weekCost: L10n.tNow("本周费用", "This week's cost")
         case .monthCost: L10n.tNow("本月费用", "This month's cost")
+        case .speed: L10n.tNow("输出速度 · 近 5 分钟", "Output speed · last 5 min")
         }
     }
 
@@ -101,6 +106,7 @@ enum MenuBarItem: Hashable, Identifiable {
         case .todayCost: L10n.tNow("今日", "TODAY")
         case .weekCost: L10n.tNow("本周", "WEEK")
         case .monthCost: L10n.tNow("本月", "MONTH")
+        case .speed: L10n.tNow("速度", "TOK/S")
         }
     }
 
@@ -111,14 +117,14 @@ enum MenuBarItem: Hashable, Identifiable {
         }
     }
 
-    /// 按菜单栏上的顺序排列：限额在前、费用在后；同类之间保持原来的先后
+    /// 按菜单栏上的顺序排列：限额在前、费用在后、速度最后；同类之间保持原来的先后
     static func ordered(_ items: [MenuBarItem]) -> [MenuBarItem] {
         items.enumerated()
             .sorted { ($0.element.order, $0.offset) < ($1.element.order, $1.offset) }
             .map(\.element)
     }
 
-    /// 菜单栏上的排列顺序：限额在前（5 小时、本周、各模型），费用在后
+    /// 菜单栏上的排列顺序：限额在前（5 小时、本周、各模型），费用在后，速度最后
     var order: Int {
         switch self {
         case .fiveHour: 0
@@ -127,6 +133,7 @@ enum MenuBarItem: Hashable, Identifiable {
         case .todayCost: 3
         case .weekCost: 4
         case .monthCost: 5
+        case .speed: 6
         }
     }
 }
@@ -138,6 +145,24 @@ enum ResetTimeStyle: String, CaseIterable, Identifiable, Codable {
     /// 2026年10月3日 22:00
     case fullDate
     var id: String { rawValue }
+}
+
+/// 面板里输出速度怎么显示
+enum SpeedDisplay: String, CaseIterable, Identifiable, Codable {
+    /// 近 5 分钟的速度和最近 1 小时的折线
+    case compact
+    /// 再画出每一次回复的速度
+    case detailed
+    case hidden
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .compact: L10n.tNow("简洁", "Simple")
+        case .detailed: L10n.tNow("每次回复", "Every reply")
+        case .hidden: L10n.tNow("不显示", "Hidden")
+        }
+    }
 }
 
 /// 本期消耗的统计范围。Claude 的额度按周重置，默认是本周。
@@ -242,6 +267,12 @@ final class Preferences {
     var resetTimeStyle: ResetTimeStyle { didSet { save(resetTimeStyle.rawValue, "resetTimeStyle") } }
     /// 重置时间旁显示倒计时，精确到秒、每秒刷新。默认关闭。
     var showsResetCountdown: Bool { didSet { save(showsResetCountdown, "showsResetCountdown") } }
+    /// 面板里的输出速度。默认简洁，每次回复的点图要在设置里打开
+    var speedDisplay: SpeedDisplay { didSet { save(speedDisplay.rawValue, "speedDisplay") } }
+    /// 最近一次能算准每周额度的同步（官方本周百分比至少 10%）。之后某一周百分比还小时，预计先借用它
+    var allowanceBasis: AllowanceBasis? {
+        didSet { save(allowanceBasis.flatMap { try? JSONEncoder().encode($0) }, "allowanceBasis") }
+    }
 
     private init() {
         let d = UserDefaults.standard
@@ -293,6 +324,8 @@ final class Preferences {
         refreshOnOpen = d.object(forKey: "refreshOnOpen") as? Bool ?? true
         resetTimeStyle = ResetTimeStyle(rawValue: d.string(forKey: "resetTimeStyle") ?? "") ?? .weekday
         showsResetCountdown = d.object(forKey: "showsResetCountdown") as? Bool ?? false
+        speedDisplay = SpeedDisplay(rawValue: d.string(forKey: "speedDisplay") ?? "") ?? .compact
+        allowanceBasis = d.data(forKey: "allowanceBasis").flatMap { try? JSONDecoder().decode(AllowanceBasis.self, from: $0) }
     }
 
     private func save(_ value: Any?, _ key: String) {

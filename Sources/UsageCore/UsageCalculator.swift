@@ -12,13 +12,15 @@ public struct UsageSettings: Sendable, Equatable {
     public var weeklyReset: Date?
     /// 进行中的 5 小时窗口的重置时间，窗口是它之前的 5 小时。没有进行中的窗口时为 nil。
     public var fiveHourReset: Date?
-    /// 上次同步时官方的每周限额（全部模型），用来让预计停在额度用完的地方。没有官方数据时为 nil。
+    /// 上次同步时官方的每周限额（全部模型），用来折算额度用满时的金额。没有官方数据时为 nil。
     public var weeklyReading: WeeklyReading?
+    /// 之前某一周算准的比例。本周的百分比还太小时借用它
+    public var earlierAllowance: AllowanceBasis?
     public var calendar: Calendar
 
     public init(billingAnchorDay: Int = 1, billingAnchorHour: Int = 0, billingAnchorMinute: Int = 0,
                 billingAnchorSecond: Int = 0, weeklyReset: Date? = nil, fiveHourReset: Date? = nil,
-                weeklyReading: WeeklyReading? = nil, calendar: Calendar = .current) {
+                weeklyReading: WeeklyReading? = nil, earlierAllowance: AllowanceBasis? = nil, calendar: Calendar = .current) {
         self.billingAnchorDay = billingAnchorDay
         self.billingAnchorHour = billingAnchorHour
         self.billingAnchorMinute = billingAnchorMinute
@@ -26,6 +28,7 @@ public struct UsageSettings: Sendable, Equatable {
         self.weeklyReset = weeklyReset
         self.fiveHourReset = fiveHourReset
         self.weeklyReading = weeklyReading
+        self.earlierAllowance = earlierAllowance
         self.calendar = calendar
     }
 }
@@ -36,21 +39,36 @@ public struct WeeklyReading: Sendable, Equatable {
     public var utilization: Double
     /// 取到这个百分比的时间
     public var at: Date
-    /// 额度用完后由额外用量接着付，不会停下
-    public var overageCovered: Bool
 
-    public init(utilization: Double, at: Date, overageCovered: Bool = false) {
+    public init(utilization: Double, at: Date) {
         self.utilization = utilization
         self.at = at
-        self.overageCovered = overageCovered
     }
 }
 
-/// 每周限额折算成本机消耗：同步那一刻，本周的本机消耗对应官方的百分比，照这个比例，本机花到多少时额度用完。
-/// 官方百分比里还有其他设备和网页上的用量，按同样的比例继续，算出来的就是本机还能花到哪里。
-/// 只用来让预计停在额度用完的地方，限额区显示的百分比仍然只来自官方。
+/// 折算额度用的一次同步：那一刻那一周的本机消耗对应官方的百分比
+public struct AllowanceBasis: Sendable, Equatable, Codable {
+    /// 官方百分比（0～100）
+    public var utilization: Double
+    /// 同步那一刻，那一周的本机消耗
+    public var syncedCost: Double
+    public var at: Date
+
+    public init(utilization: Double, syncedCost: Double, at: Date) {
+        self.utilization = utilization
+        self.syncedCost = syncedCost
+        self.at = at
+    }
+
+    /// 额度用满时那一周的本机消耗
+    public var full: Double { syncedCost * 100 / utilization }
+}
+
+/// 每周限额折算成本机消耗：同步那一刻，本周的本机消耗对应官方的百分比，照这个比例，本机花到多少时额度用满。
+/// 官方百分比里还有其他设备和网页上的用量，按同样的比例继续，算出来的就是本机能花到哪里。
+/// 只用来算预计，限额区显示的百分比仍然只来自官方。
 public struct WeeklyAllowance: Sendable, Equatable {
-    /// 官方百分比只有整数，太小时一个百分点的误差就很大，不拿来推算
+    /// 官方百分比只有整数，太小时一个百分点的误差就很大：低于它时先借用之前算准的比例
     public static let minimumUtilization = 10.0
 
     /// 本周窗口
@@ -61,17 +79,41 @@ public struct WeeklyAllowance: Sendable, Equatable {
     public var syncedCost: Double
     /// 本周到现在的本机消耗
     public var spent: Double
+    /// 折算用的那次同步
+    public var syncedAt: Date?
+    /// 本周的百分比还太小，借用的是之前一周的比例
+    public var borrowed = false
 
-    /// 额度用完时本周的本机消耗
+    /// 额度用满时本周的本机消耗
     public var full: Double { syncedCost * 100 / utilization }
     /// 本周还能花多少
     public var remaining: Double { max(0, full - spent) }
+
+    /// 从 t 到 end 每周都用满还能花多少：本周还剩的额度按落在这一段里的时间折算，之后每周一整份，最后不满一周的按时间折算
+    func ahead(from t: Date, to end: Date) -> Double {
+        var segment = max(t, start)
+        var weekEnd = self.end
+        var left = remaining
+        while weekEnd <= segment {
+            weekEnd = weekEnd.addingTimeInterval(LimitPace.weekWindow)
+            left = full
+        }
+        var total = 0.0
+        while segment < end {
+            let span = weekEnd.timeIntervalSince(segment)
+            total += left * min(weekEnd, end).timeIntervalSince(segment) / span
+            segment = weekEnd
+            weekEnd = weekEnd.addingTimeInterval(LimitPace.weekWindow)
+            left = full
+        }
+        return total
+    }
 }
 
-/// 照现在的速度到周期结束一共多少
+/// 预计：本周、本月是额度用满时一共多少；今天是照今天的速度到今天结束一共多少
 public struct Projection: Sendable, Equatable {
     public var cost: Double
-    /// 照这个速度，周期结束前每周额度第一次用完的时刻。用完之后到下次重置不再增加；额度够用时为 nil。
+    /// 只有今天会有：照今天的速度，本周额度在今天用完的时刻。用完之后到下次重置不再增加；额度够用时为 nil。
     public var runsOut: Date?
 
     public init(cost: Double, runsOut: Date? = nil) {
@@ -169,9 +211,19 @@ public struct PeriodUsage: Sendable, Equatable {
         return cost * length / elapsed(now: now, atLeast: Self.shortestDay)
     }
 
+    /// 预计。本周是额度用满（100%）时一共多少，不管用得快慢，已经花得更多时就是实际花的；
+    /// 本月是已经花的，加上之后每周都用满。没有额度读数时这两个都没有预计。
+    /// 今天没有单独的额度：照今天的速度按小时外推，本周额度用完就停到下次重置。
+    public func projection(now: Date, allowance: WeeklyAllowance?) -> Projection? {
+        if dayCount == 1 { return paced(now: now, allowance: allowance) }
+        guard let a = allowance else { return nil }
+        if start == a.start, end == a.end { return Projection(cost: max(cost, a.full)) }
+        return Projection(cost: cost + a.ahead(from: now, to: end))
+    }
+
     /// 照现在的速度到周期结束，并且每周额度用完就停到下次重置。
     /// 从现在起按周切开：本周最多再花掉还剩的额度，之后每一周最多一整份。额度够用时就是 `projectedCost(now:)`。
-    public func projection(now: Date, allowance: WeeklyAllowance?) -> Projection {
+    func paced(now: Date, allowance: WeeklyAllowance?) -> Projection {
         let linear = projectedCost(now: now)
         let elapsed = elapsed(now: now, atLeast: dayCount == 1 ? Self.shortestDay : 86_400)
         guard let a = allowance, cost > 0, elapsed < end.timeIntervalSince(start) else { return Projection(cost: linear) }
@@ -222,7 +274,7 @@ public struct UsageSnapshot: Sendable, Equatable {
     public var day: PeriodUsage
     /// 本周。还没有每周限额的重置时间时为 nil，不用自然周代替。
     public var week: PeriodUsage?
-    /// 每周限额折算成本机消耗，各周期的预计按它封顶。没有本周的官方读数，或额度用完后有额外用量接着付时为 nil。
+    /// 每周限额折算成本机消耗：本周、本月的预计按额度用满算。没有官方读数、也没有之前算准的比例时为 nil。
     public var weeklyAllowance: WeeklyAllowance?
     /// 进行中的 5 小时窗口里的本机消耗。没有进行中的窗口时为 nil。
     public var fiveHourCost: Double?
@@ -269,7 +321,7 @@ public enum UsageCalculator {
             billing: summarize(records: records, costs: costs, infos: infos, interval: month, calendar: cal, now: now),
             day: summarize(records: records, costs: costs, infos: infos, interval: today, calendar: cal, now: now),
             week: week,
-            weeklyAllowance: week.flatMap { allowance(records: records, costs: costs, week: $0, reading: settings.weeklyReading) },
+            weeklyAllowance: week.flatMap { allowance(records: records, costs: costs, week: $0, reading: settings.weeklyReading, earlier: settings.earlierAllowance) },
             fiveHourCost: settings.fiveHourReset.map { reset in
                 let from = lowerBound(records, reset.timeIntervalSince1970 - fiveHourWindow)
                 let to = lowerBound(records, reset.timeIntervalSince1970)
@@ -331,15 +383,25 @@ public enum UsageCalculator {
 
     /// 本周的官方读数折算成本机消耗。读数必须是这一周里取到的：重置之后、还没同步时，上一周的百分比不算。
     /// 本机消耗按读数那一刻之前的记录算，和百分比是同一时刻，之后新增的消耗不会让额度看起来变大。
-    static func allowance(records: [UsageRecord], costs: [Double], week: PeriodUsage, reading: WeeklyReading?) -> WeeklyAllowance? {
-        guard let r = reading, !r.overageCovered, r.utilization.isFinite,
-              r.utilization >= WeeklyAllowance.minimumUtilization,
-              r.at >= week.start, r.at < week.end else { return nil }
-        let from = lowerBound(records, week.start.timeIntervalSince1970)
-        let to = lowerBound(records, r.at.timeIntervalSince1970)
-        let synced = costs[from..<max(from, to)].reduce(0, +)
-        guard synced > 0 else { return nil }
-        return WeeklyAllowance(start: week.start, end: week.end, utilization: r.utilization, syncedCost: synced, spent: week.cost)
+    /// 本周的百分比还不到 10%（或还没同步过）时，借用之前算准的比例；没有的话先用本周的，用得越多越准
+    static func allowance(records: [UsageRecord], costs: [Double], week: PeriodUsage, reading: WeeklyReading?, earlier: AllowanceBasis?) -> WeeklyAllowance? {
+        var current: WeeklyAllowance?
+        if let r = reading, r.utilization.isFinite, r.utilization > 0, r.at >= week.start, r.at < week.end {
+            let from = lowerBound(records, week.start.timeIntervalSince1970)
+            let to = lowerBound(records, r.at.timeIntervalSince1970)
+            let synced = costs[from..<max(from, to)].reduce(0, +)
+            if synced > 0 {
+                current = WeeklyAllowance(start: week.start, end: week.end, utilization: r.utilization, syncedCost: synced, spent: week.cost, syncedAt: r.at)
+            }
+        }
+        if let current, current.utilization >= WeeklyAllowance.minimumUtilization { return current }
+        if let e = earlier, e.utilization >= WeeklyAllowance.minimumUtilization, e.utilization.isFinite, e.syncedCost > 0 {
+            return WeeklyAllowance(
+                start: week.start, end: week.end, utilization: e.utilization, syncedCost: e.syncedCost, spent: week.cost,
+                syncedAt: e.at, borrowed: true
+            )
+        }
+        return current
     }
 
     static func summarize(

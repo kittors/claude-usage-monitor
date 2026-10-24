@@ -699,8 +699,7 @@ private struct CycleHeader: View {
             .tracking(-0.4)
             .foregroundStyle(Palette.text)
         var line = amount
-        if p.cost > 0 {
-            let projected = projectedText(p, span: span, money: money)
+        if let projected = projectedText(p, money: money) {
             let suffix = Text("  " + L10n.t("预计 \(projected)", "→ \(projected)"))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Palette.tertiary)
@@ -718,35 +717,43 @@ private struct CycleHeader: View {
             }
     }
 
-    /// 照现在的速度到周期结束，每周额度用完就停到下次重置
-    private func projection(_ p: PeriodUsage) -> Projection {
+    /// 本周、本月：每周额度用满时一共多少；今天：照今天的速度到今天结束，每周额度用完就停到下次重置
+    private func projection(_ p: PeriodUsage) -> Projection? {
         p.projection(now: now, allowance: snapshot.weeklyAllowance)
     }
 
-    /// 额度够用时，多天的周期预计就是面板上显示的日均 × 天数，两个数对得上；只有一天时按小时外推。
-    /// 照这个速度额度会先用完时，预计停在用完的地方，下面一行写明什么时候用完
-    private func projectedText(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> String {
-        let projection = projection(p)
-        if span == .day || projection.runsOut != nil { return money.whole(projection.cost) }
-        return money.whole(p.dailyAverage(now: now), times: p.dayCount)
+    /// 预计的金额。今天还没花钱时不外推
+    private func projectedText(_ p: PeriodUsage, money: MoneyFormat) -> String? {
+        guard let projection = projection(p), p.dayCount > 1 || p.cost > 0 else { return nil }
+        return money.whole(projection.cost)
     }
 
-    /// 第几天和日均。额度会先用完时后面写上什么时候用完，一行放不下就省掉第几天
+    /// 多天的周期：第几天，和额度用满还剩多少（预计 − 已花，两个数对得上）；没有额度读数时写日均。
+    /// 今天：照今天的速度每周额度会用完时，写上什么时候用完
     @ViewBuilder
     private func summary(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> some View {
-        let daily = money.whole(p.dailyAverage(now: now))
-        let day = span == .day ? L10n.t("当天", "Today") : L10n.t("第 \(p.dayIndex) / \(p.dayCount) 天", "Day \(p.dayIndex) of \(p.dayCount)")
-        let pace = span == .day ? nil : L10n.t("日均 \(daily)", "\(daily)/day")
-        let parts = [day, pace].compactMap { $0 }
-        if let runsOut = projection(p).runsOut {
-            let note = Self.runsOutNote(runsOut, now: now)
-            ViewThatFits(in: .horizontal) {
-                Text((parts + [note]).joined(separator: " · "))
-                Text([parts.last ?? day, note].joined(separator: " · "))
+        if span == .day {
+            let today = L10n.t("当天", "Today")
+            if let runsOut = projection(p)?.runsOut {
+                Text([today, Self.runsOutNote(runsOut, now: now)].joined(separator: " · "))
+            } else {
+                Text(today)
             }
         } else {
-            Text(parts.joined(separator: " · "))
+            let day = L10n.t("第 \(p.dayIndex) / \(p.dayCount) 天", "Day \(p.dayIndex) of \(p.dayCount)")
+            Text([day, remainingNote(p, money: money)].joined(separator: " · "))
         }
+    }
+
+    private func remainingNote(_ p: PeriodUsage, money: MoneyFormat) -> String {
+        guard let projection = projection(p) else {
+            let daily = money.whole(p.dailyAverage(now: now))
+            return L10n.t("日均 \(daily)", "\(daily)/day")
+        }
+        let left = projection.cost - p.cost
+        guard left >= 0.005 else { return L10n.t("额度已用满", "limit used up") }
+        let amount = money.whole(left)
+        return L10n.t("还剩 \(amount)", "\(amount) left")
     }
 
     /// 额度用完的时刻：今天写到分钟，明天写「明天」，一周之内写星期几，再远写日期
@@ -771,34 +778,52 @@ private struct CycleHeader: View {
 
     private func help(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> String {
         let currency = L10n.t("点击金额切换货币", "Click the amount to change currency")
-        guard p.cost > 0 else { return currency }
-        let projected = projectedText(p, span: span, money: money)
-        let daily = money.whole(p.dailyAverage(now: now))
-        guard let runsOut = projection(p).runsOut, let a = snapshot.weeklyAllowance else {
-            let pace = span == .day
-                ? L10n.t("照今天到现在的速度，今天预计一共 \(projected)", "At today's pace so far, about \(projected) today")
-                : L10n.t("照现在的速度，这个周期预计一共 \(projected)（日均 \(daily) × \(p.dayCount) 天）", "At this pace, about \(projected) for the period (\(daily)/day × \(p.dayCount) days)")
-            return "\(pace)\n\(currency)"
+        if span == .day { return [dayHelp(p, money: money), currency].compactMap { $0 }.joined(separator: "\n") }
+        guard let projection = projection(p), let a = snapshot.weeklyAllowance else {
+            let pending = L10n.t("同步每周限额后显示预计：每周额度用满时本机一共花多少", "The estimate appears once the weekly limit syncs: what this Mac spends with the weekly limit fully used")
+            return "\(pending)\n\(currency)"
+        }
+        let projected = money.whole(projection.cost)
+        let full = money.whole(a.full)
+        let meaning = span == .week
+            ? L10n.t("预计 \(projected)：本周额度用满（100%）时本机一共花多少，不管用得快慢", "\(projected) is what this Mac spends with this week's limit fully used, however fast you go")
+            : L10n.t("预计 \(projected)：已经花的 \(money.string(p.cost))，加上之后每周都用满（每周约 \(full)，跨出这个周期的那一周按时间折算）", "\(projected): \(money.string(p.cost)) spent, plus every week after this used in full (about \(full) a week, prorated where a week runs past the period)")
+        return "\(meaning)\n\(allowanceBasis(a, money: money))\n\(currency)"
+    }
+
+    /// 额度用满的金额是怎么折算出来的
+    private func allowanceBasis(_ a: WeeklyAllowance, money: MoneyFormat) -> String {
+        let percent = Int(a.utilization.rounded(.down))
+        let full = money.whole(a.full)
+        let spent = money.string(a.syncedCost)
+        if a.borrowed {
+            let at = a.syncedAt.map { CycleSection.day($0) } ?? ""
+            return L10n.t(
+                "本周的百分比还不到 10%，误差太大，先用 \(at) 同步时的比例：那一周已用 \(percent)%，本机花了 \(spent)，额度用满约 \(full)",
+                "This week is still under 10%, too coarse to use, so it borrows the sync on \(at): that week was at \(percent)% with \(spent) spent here, so a full week is about \(full)"
+            )
+        }
+        let basis = L10n.t(
+            "上次同步时本周已用 \(percent)%，本机花了 \(spent)，照这个比例本机花到约 \(full) 时额度用满",
+            "At the last sync this week was at \(percent)% with \(spent) spent here, so the limit is full at about \(full)"
+        )
+        guard a.utilization < WeeklyAllowance.minimumUtilization else { return basis }
+        return basis + L10n.t("。官方百分比只有整数，现在还小，误差较大，用得越多越准", ". The official percentage is a whole number, so this is rough while it is small and sharpens as you use more")
+    }
+
+    /// 今天：照今天到现在的速度今天一共多少；每周额度会在今天用完时写明什么时候
+    private func dayHelp(_ p: PeriodUsage, money: MoneyFormat) -> String? {
+        guard p.cost > 0, let projection = projection(p) else { return nil }
+        let projected = money.whole(projection.cost)
+        guard let runsOut = projection.runsOut else {
+            return L10n.t("照今天到现在的速度，今天预计一共 \(projected)", "At today's pace so far, about \(projected) today")
         }
         let stop = L10n.t("额度用完就停到下次重置", "spending stops until the next reset")
-        let total = span == .day
-            ? L10n.t("今天预计一共 \(projected)", "about \(projected) today")
-            : L10n.t("这个周期预计一共 \(projected)", "about \(projected) for the period")
-        let pace: String
-        if runsOut > now {
-            let moment = LimitsSection.formatter(Localization.shared.isChinese ? "M月d日 HH:mm" : "MMM d, HH:mm").string(from: runsOut)
-            pace = span == .day
-                ? L10n.t("照今天到现在的速度，每周额度会在 \(moment) 前后用完；\(stop)，\(total)", "At today's pace so far, the weekly limit runs out around \(moment) and \(stop): \(total)")
-                : L10n.t("照现在的速度（日均 \(daily)），每周额度会在 \(moment) 前后用完；\(stop)，\(total)", "At this pace (\(daily)/day), the weekly limit runs out around \(moment) and \(stop): \(total)")
-        } else {
-            pace = L10n.t("每周额度已经用完；\(stop)，\(total)", "The weekly limit is used up and \(stop): \(total)")
+        guard runsOut > now else {
+            return L10n.t("每周额度已经用完；\(stop)，今天预计一共 \(projected)", "The weekly limit is used up and \(stop): about \(projected) today")
         }
-        let percent = Int(a.utilization.rounded(.down))
-        let basis = L10n.t(
-            "上次同步时本周已用 \(percent)%，本机花了 \(money.string(a.syncedCost))，照这个比例本机花到约 \(money.whole(a.full)) 时额度用完",
-            "At the last sync the week was at \(percent)% with \(money.string(a.syncedCost)) spent here, so the limit runs out at about \(money.whole(a.full))"
-        )
-        return "\(pace)\n\(basis)\n\(currency)"
+        let moment = LimitsSection.formatter(Localization.shared.isChinese ? "M月d日 HH:mm" : "MMM d, HH:mm").string(from: runsOut)
+        return L10n.t("照今天到现在的速度，每周额度会在 \(moment) 前后用完；\(stop)，今天预计一共 \(projected)", "At today's pace so far, the weekly limit runs out around \(moment) and \(stop): about \(projected) today")
     }
 }
 

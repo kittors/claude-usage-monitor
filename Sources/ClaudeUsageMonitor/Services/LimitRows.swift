@@ -59,6 +59,13 @@ extension UsageStore {
         case .todayCost: return cost(snapshot?.day.cost)
         case .weekCost: return cost(snapshot?.week?.cost)
         case .monthCost: return cost(snapshot?.billing.cost)
+        case .speed:
+            // 和面板上的大数字是同一个：同一个模型近 5 分钟的加权均速
+            let now = Date().timeIntervalSince1970
+            guard let model = speedModel(in: speedLog.models(now: now)),
+                  let rate = OutputSpeed.rate(model.requests, from: now - OutputSpeed.recent, to: now)
+            else { return nil }
+            return .init(label: item.shortLabel, text: String(Int(rate.tokensPerSecond.rounded())), fraction: nil)
         }
     }
 

@@ -342,6 +342,14 @@ private struct DisplayPage: View {
                 SwitchToggle(isOn: $prefs.showsResetCountdown)
             }
 
+            SettingsHeader(title: L10n.t("输出速度", "Output speed"))
+            SettingsRow(
+                title: L10n.t("面板显示", "In the panel"),
+                detail: L10n.t("简洁：近 5 分钟的速度和最近 1 小时的折线。每次回复：再画出每一次回复的速度。", "Simple shows the last 5 minutes and a one-hour line. Every reply also plots each reply.")
+            ) {
+                PillSegmented(options: SpeedDisplay.allCases.map { ($0, $0.title) }, selection: $prefs.speedDisplay)
+            }
+
             SettingsHeader(title: L10n.t("货币", "Currency"))
             SettingsRow(title: L10n.t("显示货币", "Display currency"), detail: L10n.t("按最新美元牌价自动折算，面板金额一起变", "Converted from USD at the latest rate. Panel amounts follow.")) {
                 DropdownButton(
@@ -391,17 +399,24 @@ private struct MenuBarItemsRow: View {
             }
             HStack(spacing: 2) {
                 ForEach(limits) { column($0) }
-                Capsule()
-                    .fill(Color.white.opacity(0.1))
-                    .frame(width: 1, height: 20)
-                    .padding(.horizontal, 5)
+                separator
                 ForEach([MenuBarItem.todayCost, .weekCost, .monthCost]) { column($0) }
+                separator
+                column(.speed)
             }
             .padding(3)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.black.opacity(0.22)))
             .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5))
         }
         .padding(.vertical, 11)
+    }
+
+    /// 限额、费用、速度三组之间的竖线
+    private var separator: some View {
+        Capsule()
+            .fill(Color.white.opacity(0.1))
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 5)
     }
 
     /// 5 小时、本周，以及账号里有单独周额度的模型；已选但暂时没有数据的模型也列出来，方便取消
@@ -444,6 +459,7 @@ private struct MenuBarItemsRow: View {
         case .todayCost: .init(label: item.shortLabel, text: money.compact(12), fraction: nil)
         case .weekCost: .init(label: item.shortLabel, text: money.compact(86), fraction: nil)
         case .monthCost: .init(label: item.shortLabel, text: money.compact(1234), fraction: nil)
+        case .speed: .init(label: item.shortLabel, text: "64", fraction: nil)
         }
     }
 }

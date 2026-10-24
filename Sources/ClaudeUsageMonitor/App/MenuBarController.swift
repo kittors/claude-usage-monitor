@@ -27,6 +27,9 @@ final class MenuBarController: NSObject {
     private var lastPulse = 0
     private var shieldTicker: Timer?
     private var shieldPhase: CGFloat = 0
+    /// 菜单栏显示速度时，近 5 分钟的窗口随时间往前走，要定时看一眼数字变没变
+    private var speedTicker: Timer?
+    private var shownSpeed: String?
     private var occlusionObserver: NSObjectProtocol?
 
     var isOpen: Bool { presentation.isVisible }
@@ -119,6 +122,10 @@ final class MenuBarController: NSObject {
             _ = ExchangeRates.shared.fetchedAt
             _ = Localization.shared.token
             _ = store.pulse
+            if prefs.menuBarItems.contains(.speed) {
+                _ = store.speedLog
+                _ = store.speedChoice
+            }
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -162,7 +169,9 @@ final class MenuBarController: NSObject {
         iconInput = input
         statusItem.button?.image = StatusIconRenderer.image(input)
         // 悬停说明：菜单栏上每个数值的完整含义
-        var tip = zip(items, values).map { item, value in "\(item.title) \(value.text)" }
+        var tip = zip(items, values).map { item, value in
+            item == .speed && value.text != "–" ? "\(item.title) \(value.text) tok/s" : "\(item.title) \(value.text)"
+        }
         if rows.isEmpty, prefs.officialUsageEnabled {
             tip.append(L10n.t("官方用量：\(LimitsSection.shortReason(store.official.state))", "Official usage: \(LimitsSection.shortReason(store.official.state))"))
         }
@@ -184,6 +193,29 @@ final class MenuBarController: NSObject {
         default: .calm
         }
         animator.configure(enabled: prefs.menuBarAnimation && input.showsMascot, holdsShield: input.shieldInHand, mood: mood)
+        let showsSpeed = items.contains(.speed) && (prefs.menuBarStyle == .iconPercent || prefs.menuBarStyle == .ringPercent)
+        shownSpeed = showsSpeed ? values[items.firstIndex(of: .speed) ?? 0].text : nil
+        updateSpeedTicker(showsSpeed)
+    }
+
+    /// 没有新回复时，旧的请求也会滑出近 5 分钟：每 5 秒算一次，数字变了才重画
+    private func updateSpeedTicker(_ on: Bool) {
+        if on {
+            guard speedTicker == nil else { return }
+            let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let text = self.store.menuBarValue(.speed, money: self.prefs.money)?.text ?? "–"
+                    if text != self.shownSpeed { self.renderIcon() }
+                }
+            }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            speedTicker = timer
+        } else if speedTicker != nil {
+            speedTicker?.invalidate()
+            speedTicker = nil
+        }
     }
 
     /// 只换动画的一帧：沿用上次算好的数值，不重新计算

@@ -14,11 +14,32 @@ public struct ParsedUsage: Sendable {
     public var tokens: TokenCounts
     public var webSearches: Int
     public var isFast: Bool
+    /// 这条回复对应的 `api-request` 行，用来找到请求发出的时刻。Claude Code 2.1.304 起才有
+    public var requestRef: String?
+}
+
+/// Claude Code 发出的一次请求。2.1.304 起每次请求前写一行 `api-request`；回复要等整条结束才写进会话记录
+public struct RequestStart: Sendable, Equatable {
+    public var id: String
+    /// 请求发出的时刻（Unix 秒）
+    public var time: Double
+    /// 请求的模型，可能带 `[1m]` 之类的后缀
+    public var model: String?
+
+    public init(id: String, time: Double, model: String?) {
+        self.id = id
+        self.time = time
+        self.model = model
+    }
 }
 
 public enum ParsedEvent: Sendable {
     case usage(ParsedUsage)
     case title(sessionId: String, title: String)
+    /// 发出了一次请求，回复写完之前会话记录里只有这一行
+    case requestStarted(RequestStart)
+    /// 等着的请求不会有回复了：出错后放弃（合成的回复）、被用户中断
+    case requestEnded
 }
 
 public struct FileParseResult: Sendable {
@@ -39,6 +60,9 @@ public enum TokenParser {
     private static let needleUsage = Array(#""usage""#.utf8)
     private static let needleAssistant = Array(#""type":"assistant""#.utf8)
     private static let needleTitle = Array(#""type":"custom-title""#.utf8)
+    private static let needleRequest = Array(#""type":"api-request""#.utf8)
+    private static let needleUser = Array(#""type":"user""#.utf8)
+    private static let needleInterrupted = Array(#""text":"[Request interrupted by user"#.utf8)
 
     // MARK: 文件
 
@@ -86,12 +110,30 @@ public enum TokenParser {
             return .title(sessionId: sid, title: title)
         }
 
+        // `api-request-blob` 行带着请求内容，引号位置不同，不会匹配到这里
+        if contains(line, needleRequest) {
+            guard let row = decode(RequestRow.self, line, decoder),
+                  row.type == "api-request",
+                  let id = row.id,
+                  let stamp = row.timestamp, let time = parseTimestamp(stamp)
+            else { return nil }
+            return .requestStarted(RequestStart(id: id, time: time, model: row.params?.model))
+        }
+
+        // 中断是一行很短的用户消息；工具结果里引用到这句话时在字符串里，引号是转义过的
+        if line.count < 4096, contains(line, needleInterrupted), contains(line, needleUser) {
+            return .requestEnded
+        }
+
         guard contains(line, needleUsage), contains(line, needleAssistant),
               let row = decode(AssistantRow.self, line, decoder),
               row.type == "assistant",
               let message = row.message,
-              let usage = message.usage,
-              let model = message.model, model != "<synthetic>",
+              let model = message.model
+        else { return nil }
+        // 出错放弃、没有发出请求时，Claude Code 自己合成一条回复，不计用量
+        if model == "<synthetic>" { return .requestEnded }
+        guard let usage = message.usage,
               let stamp = row.timestamp, let time = parseTimestamp(stamp)
         else { return nil }
 
@@ -125,7 +167,8 @@ public enum TokenParser {
             isSidechain: row.isSidechain ?? false,
             tokens: tokens,
             webSearches: Int(usage.server_tool_use?.web_search_requests ?? 0),
-            isFast: usage.speed == "fast"
+            isFast: usage.speed == "fast",
+            requestRef: row.requestRef
         ))
     }
 
@@ -222,10 +265,22 @@ private struct TitleRow: Decodable {
     let sessionId: String?
 }
 
+private struct RequestRow: Decodable {
+    let type: String?
+    let id: String?
+    let timestamp: String?
+    let params: Params?
+
+    struct Params: Decodable {
+        let model: String?
+    }
+}
+
 private struct AssistantRow: Decodable {
     let type: String?
     let timestamp: String?
     let requestId: String?
+    let requestRef: String?
     let sessionId: String?
     let cwd: String?
     let gitBranch: String?

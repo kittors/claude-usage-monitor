@@ -75,6 +75,11 @@ struct PopoverView: View {
                 LimitsSection(store: store, prefs: prefs)
                     .padding(.vertical, 14)
                 Hairline()
+                if prefs.speedDisplay != .hidden {
+                    SpeedSection(store: store, prefs: prefs)
+                        .padding(.vertical, 14)
+                    Hairline()
+                }
                 CycleSection(snapshot: snapshot, prefs: prefs)
                     .padding(.vertical, 14)
             }

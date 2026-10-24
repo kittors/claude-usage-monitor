@@ -44,13 +44,13 @@ final class UsageEngine: @unchecked Sendable {
         }
     }
 
-    func scan(roots: [URL], progress: ((Int, Int) -> Void)?, completion: @escaping (ScanStats) -> Void) {
+    func scan(roots: [URL], progress: ((Int, Int) -> Void)?, completion: @escaping (ScanStats, SpeedLog) -> Void) {
         queue.async {
             guard let index = self.index else { return }
             let stats = index.scan(roots: roots, progress: progress)
             if stats.changed { self.dirty = true }
             if stats.filesParsed > 0 { self.persistSoon() }
-            completion(stats)
+            completion(stats, index.speedLog())
         }
     }
 
@@ -221,12 +221,13 @@ final class UsageStore {
                 DispatchQueue.main.async { self?.pushProgress(done: done, total: total) }
             }
         }
-        engine.scan(roots: prefs.dataRoots, progress: progress) { [weak self] stats in
+        engine.scan(roots: prefs.dataRoots, progress: progress) { [weak self] stats, speed in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isScanning = false
                 self.lastScan = stats
                 self.lastScanAt = Date()
+                self.applySpeed(speed)
                 if stats.changed || self.snapshot == nil {
                     self.recompute(pulse: !initial && stats.changed)
                 } else {
@@ -254,6 +255,7 @@ final class UsageStore {
     func billingSettings() -> UsageSettings {
         var settings = prefs.usageSettings
         settings.weeklyReading = weeklyReading
+        settings.earlierAllowance = prefs.allowanceBasis
         if let reset = official.usage?.fiveHour?.resetsAt, reset > Date() { settings.fiveHourReset = reset }
         if let reset = official.usage?.weeklyReset() ?? prefs.weeklyResetAt {
             settings.weeklyReset = reset
@@ -268,7 +270,7 @@ final class UsageStore {
     /// 用面板上显示的整数百分比：拿它和本机消耗心算，结果和预计一致
     private var weeklyReading: WeeklyReading? {
         guard let usage = official.usage, let week = usage.sevenDay else { return nil }
-        return WeeklyReading(utilization: Double(week.percent), at: usage.fetchedAt, overageCovered: usage.extraUsageEnabled == true)
+        return WeeklyReading(utilization: Double(week.percent), at: usage.fetchedAt)
     }
 
     /// 已确定的重置时刻：当前官方数据优先，否则用上次同步记下的时刻
@@ -292,6 +294,7 @@ final class UsageStore {
                 }
                 self.indexedFiles = files
                 self.lastUpdated = Date()
+                self.rememberAllowance(snap)
                 self.phase = (snap?.hasData ?? false) ? .ready : (self.isScanning ? self.phase : .empty)
                 if pulse { self.pulse += 1 }
                 self.trackConsumption(snap)
@@ -325,6 +328,38 @@ final class UsageStore {
 
     /// 上次重算时用的每周限额读数
     @ObservationIgnored private var computedReading: WeeklyReading?
+
+    /// 本周的百分比够大、额度折算准了：记下来，之后某一周开头百分比还小时，预计先借用它
+    private func rememberAllowance(_ snap: UsageSnapshot?) {
+        guard let a = snap?.weeklyAllowance, !a.borrowed, a.utilization >= WeeklyAllowance.minimumUtilization,
+              let at = a.syncedAt else { return }
+        let basis = AllowanceBasis(utilization: a.utilization, syncedCost: a.syncedCost, at: at)
+        if prefs.allowanceBasis != basis { prefs.allowanceBasis = basis }
+    }
+
+    // MARK: 输出速度
+
+    /// 最近完成的请求和正在等回复的请求
+    private(set) var speedLog = SpeedLog.empty
+    /// 面板上点选的模型。没选时跟着自动选中的那个
+    var speedChoice: String?
+    /// 自动选中的模型：只要它最近 1 小时还有请求就一直是它，不会因为另一个模型多输出了一点就跳过去
+    @ObservationIgnored private var speedDefault: String?
+
+    private func applySpeed(_ log: SpeedLog) {
+        guard log != speedLog else { return }
+        let models = log.models(now: Date().timeIntervalSince1970)
+        if !models.contains(where: { $0.id == speedDefault }) { speedDefault = models.first?.id }
+        withAnimation(.smooth(duration: 0.5)) { speedLog = log }
+    }
+
+    /// 面板和菜单栏看同一个模型：点选的，否则自动选中的，否则输出最多的
+    func speedModel(in models: [ModelSpeed]) -> ModelSpeed? {
+        for id in [speedChoice, speedDefault] {
+            if let id, let model = models.first(where: { $0.id == id }) { return model }
+        }
+        return models.first
+    }
 
     private func observeOfficialSettings() {
         withObservationTracking {
@@ -364,6 +399,7 @@ final class UsageStore {
     func rebuildIndex() {
         watcher?.stop()
         snapshot = nil
+        speedLog = .empty
         observedCost = nil
         syncedCost = nil
         lastCostIncrease = nil

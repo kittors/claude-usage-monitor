@@ -30,7 +30,7 @@ cat <<NOTES
 
 4. To get exact limits, allow access to the \`Claude Code-credentials\` keychain item when asked (choose **Always Allow**). You need to have signed in to Claude Code on this Mac.
 
-Requires macOS 15 or later. The app UI is in Simplified Chinese.
+Requires macOS 15 or later. The app follows the system language, Chinese or English, and Settings › General can switch it.
 NOTES
 if [ -n "$SHA" ]; then
   printf '\nSHA-256: `%s`\n' "$SHA"

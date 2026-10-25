@@ -18,7 +18,7 @@
 
 <br>
 
-<img src="docs/images/zh/hero.png" width="880" alt="菜单栏下方的 Claude Usage Monitor 面板，以及它的显示设置">
+<img src="docs/images/zh/hero.png" width="880" alt="菜单栏下方的 Claude Usage Monitor 面板，以及它的菜单栏设置">
 
 </div>
 
@@ -36,8 +36,8 @@
 </td>
 <td width="50%" valign="top">
 
-**菜单栏上一眼看懂**<br>
-默认只显示 5 小时；也可以加上本周、Fable、费用。每个数值一列、上方有小标签，按占用程度上色。
+**只放你要看的**<br>
+菜单栏默认只显示 5 小时，也可以加上本周、Fable、费用，每个数值一列、上方有小标签，按占用程度上色。面板里每一块都能选详细、简洁或不显示，点标题就能收起。
 
 </td>
 </tr>
@@ -91,11 +91,21 @@
 <tr>
 <td width="40%" align="center" valign="top">
 <img src="docs/images/zh/panel.png" alt="菜单栏面板"><br>
-<sub><b>面板</b> · 额度与安全线、花费与进程</sub>
+<sub><b>面板</b> · 额度与安全线、输出速度、花费</sub>
 </td>
 <td width="60%" align="center" valign="top">
-<img src="docs/images/zh/settings-display.png" alt="设置 › 显示"><br>
-<sub><b>设置 › 显示</b> · 选择菜单栏上显示什么</sub>
+<img src="docs/images/zh/settings-panel.png" alt="设置 › 面板"><br>
+<sub><b>设置 › 面板</b> · 每一块选详细、简洁或不显示</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<img src="docs/images/zh/panel-simple.png" alt="简洁的面板"><br>
+<sub><b>简洁</b> · 限额一项一行，输出速度收起成一行摘要</sub>
+</td>
+<td align="center" valign="top">
+<img src="docs/images/zh/settings-menubar.png" alt="设置 › 菜单栏"><br>
+<sub><b>设置 › 菜单栏</b> · 选择菜单栏上显示什么</sub>
 </td>
 </tr>
 <tr>

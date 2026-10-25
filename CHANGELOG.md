@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-10-25
+
+### Added
+
+- Limits, Output speed and Spend fold away. Click a section's title to collapse it to one line with a summary beside the title, such as "5-hour 4%  Week 7%  Fable 0%", "84 tok/s" or "Week $257.88", and click again to bring it back. The panel remembers which sections are folded. Pointing at a title shows the arrow. When new official numbers cannot be fetched, folded limits leave the percentages uncolored and say why, such as "Login expired", so old numbers don't read as current.
+- A Panel tab in Settings chooses what the panel shows. Limits, Output speed and Spend can each be Detailed, Simple or Hidden; the exit row can show always or only when something is wrong; and the process list can be turned off. Changes apply as you make them, so the panel can show nothing but the limits.
+- Simple layouts. Limits put each limit on one line with its name, bar and percentage, and the reset time moves to the tooltip. Output speed shows the last 5 minutes and the hour's line. Spend keeps the amount, the estimate and the last 14 days.
+
+### Changed
+
+- Empty sections say what they are waiting for in a short note instead of drawing empty charts and dashes. With no replies in the last hour, Output speed no longer draws an empty chart with a lone 100 tok/s line. Limits without official numbers explain why and offer the sign-in button when one is needed, and This week before the weekly limit has synced says so instead of leaving a blank space under the tabs.
+- Pointing at a limit bar shows the safe line in the line under the bar, in place of the reset time. The floating label it replaces covered the title of the row above.
+- Limits no longer wait for the local index, so they show during the first scan and when no Claude Code sessions are found.
+- The dates of the spend period sit on the section's title line, which saves a line.
+- Settings › Display is now Settings › Menu Bar. The reset time format, the countdown and the currency moved to the Panel tab, where Output speed's "Every reply" is now Detailed.
+
 ## [1.6.1] - 2026-10-25
 
 ### Added

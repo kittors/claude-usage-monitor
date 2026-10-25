@@ -18,7 +18,7 @@ plus what your Claude Code sessions would cost at API prices. Native, private, a
 
 <br>
 
-<img src="docs/images/en/hero.png" width="880" alt="The Claude Usage Monitor panel under the menu bar, next to its Display settings">
+<img src="docs/images/en/hero.png" width="880" alt="The Claude Usage Monitor panel under the menu bar, next to its Menu Bar settings">
 
 </div>
 
@@ -36,8 +36,8 @@ plus what your Claude Code sessions would cost at API prices. Native, private, a
 </td>
 <td width="50%" valign="top">
 
-**A menu bar that says what it shows**<br>
-5-hour by default. Add the week, Fable, or cost, and each value gets its own compact column with a small label, colored by how full it is.
+**Only what you want to see**<br>
+The menu bar shows the 5-hour limit by default. Add the week, Fable, or cost, and each value gets its own compact column with a small label, colored by how full it is. Each section of the panel can be Detailed, Simple, or Hidden, and a click on its title folds it away.
 
 </td>
 </tr>
@@ -91,11 +91,21 @@ Renews the Claude Code login the way Claude Code does, with the same locks, so t
 <tr>
 <td width="40%" align="center" valign="top">
 <img src="docs/images/en/panel.png" alt="Menu bar panel"><br>
-<sub><b>The panel</b> · limits with safe lines, spend, and processes</sub>
+<sub><b>The panel</b> · limits with safe lines, output speed, and spend</sub>
 </td>
 <td width="60%" align="center" valign="top">
-<img src="docs/images/en/settings-display.png" alt="Settings, Display"><br>
-<sub><b>Settings › Display</b> · pick what the menu bar shows</sub>
+<img src="docs/images/en/settings-panel.png" alt="Settings, Panel"><br>
+<sub><b>Settings › Panel</b> · each section Detailed, Simple, or Hidden</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<img src="docs/images/en/panel-simple.png" alt="A simple panel"><br>
+<sub><b>Simple</b> · one line per limit, output speed folded to a summary</sub>
+</td>
+<td align="center" valign="top">
+<img src="docs/images/en/settings-menubar.png" alt="Settings, Menu Bar"><br>
+<sub><b>Settings › Menu Bar</b> · pick what the menu bar shows</sub>
 </td>
 </tr>
 <tr>

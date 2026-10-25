@@ -37,7 +37,7 @@ plus what your Claude Code sessions would cost at API prices. Native, private, a
 <td width="50%" valign="top">
 
 **Only what you want to see**<br>
-The menu bar shows the 5-hour limit by default. Add the week, Fable, or cost, and each value gets its own compact column with a small label, colored by how full it is. Each section of the panel can be Detailed, Simple, or Hidden, and a click on its title folds it away.
+The menu bar shows the 5-hour limit by default. Add the week, Fable, or cost, and each value gets its own compact column with a small label, colored by how full it is. Each section of the panel can be Detailed, Simple, or Hidden, and a click on its title folds it away. Simple and folded sections keep the details a short hover away.
 
 </td>
 </tr>

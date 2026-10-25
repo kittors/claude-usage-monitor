@@ -23,6 +23,9 @@ struct PopoverView: View {
     let actions: PopoverActions
     var onSizeChange: (CGSize) -> Void = { _ in }
 
+    /// 悬停说明：同一时刻只浮起一条，画在面板最上层
+    @State private var tips = TipCenter()
+
     var body: some View {
         let visible = presentation.isVisible
         let processes = prefs.showsProcesses
@@ -50,6 +53,10 @@ struct PopoverView: View {
         // 万一某一行比面板宽，也只是往右溢出，不会把整块内容往左挤
         .frame(width: Metrics.popoverWidth, alignment: .leading)
         .background(PanelBackground())
+        // 说明只在面板范围里摆放，不会伸到阴影边距外被窗口裁掉
+        .overlayPreferenceValue(TipKey.self) { item in
+            TipLayer(item: item)
+        }
         // 进程出现、退出，出口出了问题，IPv6 警告、更新提示出现时，面板高度随内容一起过渡
         .animation(.disclosure, value: ClaudeProcesses.shared.tasks.map(\.pid))
         .animation(.disclosure, value: NetworkPlace.shared.ipv6IsDirect)
@@ -61,6 +68,10 @@ struct PopoverView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.panelVisible, visible)
         .environment(\.colorScheme, .dark)
+        .environment(tips)
+        .onChange(of: visible, initial: true) { _, visible in
+            tips.setActive(visible)
+        }
         .task(id: visible && processes) {
             guard visible, processes else { return }
             while !Task.isCancelled {
@@ -205,10 +216,12 @@ private struct NetworkPlaceRow: View {
                 .lineLimit(1)
             if let place = network.place, place.restrictsUsage {
                 chip(L10n.t("已暂停", "Paused"), color: Palette.critical)
+                    .tip("exit.paused") { Tip(L10n.t("出口在中国大陆、香港或澳门，暂停向官方查询用量", "The exit is in mainland China, Hong Kong, or Macau, so official usage checks are paused.")) }
             } else if network.place?.isUnitedStates == true {
                 chip(L10n.t("美区", "US"), color: Palette.accent)
             } else if network.failed {
                 chip(L10n.t("已暂停", "Paused"), color: Palette.critical)
+                    .tip("exit.paused") { Tip(L10n.t("确认不了出口在哪，先暂停向官方查询用量", "The exit cannot be confirmed, so official usage checks are paused.")) }
             }
             Spacer(minLength: 8)
             if let place = network.place {
@@ -323,6 +336,7 @@ private struct ClaudeProcessSection: View {
                     Text(L10n.t("\(list.tasks.count) 个", "\(list.tasks.count)"))
                         .monospacedDigit()
                         .contentTransition(.identity)
+                        .tip("processes.summary") { expanded ? nil : Self.tip(list.tasks) }
                 }
 
                 // 高度从 0 到全部行：行随高度逐渐露出，下方内容与面板背景在同一个动画里移动
@@ -339,6 +353,15 @@ private struct ClaudeProcessSection: View {
             }
             .padding(.bottom, 8)
         }
+    }
+
+    /// 收起时的说明：有哪些进程、各占多少内存
+    private static func tip(_ tasks: [ClaudeTask]) -> Tip {
+        let rows = tasks.map { task in
+            let memory = ByteCountFormatter.string(fromByteCount: task.bytes, countStyle: .memory)
+            return Tip.Row(task.name, task.detail.map { "\($0) · \(memory)" } ?? memory)
+        }
+        return Tip(rows: rows, note: L10n.t("点击展开，可以强制退出", "Click to expand and force quit"))
     }
 
     /// 展开状态必须在动画事务里切换：只给列表加 `.animation` 的话，下方内容会直接跳到终点，
@@ -397,7 +420,6 @@ private struct ClaudeProcessRow: View {
                 .fill(hovering ? Palette.hover : .clear)
         )
         .onHover { h in withAnimation(.easeOut(duration: 0.14)) { hovering = h } }
-        .help(L10n.t("强制停止这个进程", "Force quit this process"))
     }
 }
 
@@ -439,15 +461,16 @@ private struct Footer: View {
             let update = AppUpdate.shared
             FooterButton(icon: .sliders, title: L10n.t("设置…", "Settings…"), badge: update.showsBadge,
                          action: update.showsBadge ? actions.openUpdate : actions.openSettings)
-                .help(update.availableVersion.map { L10n.t("新版本 \($0) 可以更新", "Version \($0) is available") } ?? "")
+                .tip("footer.settings") { settingsTip(update) }
             Spacer()
             FooterButton(icon: .refresh, title: L10n.t("立即刷新", "Refresh"), rotation: spin) {
                 store.refreshNow()
                 startSpinning()
             }
-            .help(store.lastUpdated.map { L10n.t("上次同步：\(Fmt.relative($0))", "Last sync: \(Fmt.relative($0))") } ?? "")
+            .tip("footer.refresh") { refreshTip }
             Spacer()
             FooterButton(icon: .power, title: L10n.t("退出", "Quit"), action: actions.quit)
+                .tip("footer.quit") { Tip(rows: [Self.shortcut("⌘Q")]) }
         }
         .padding(.horizontal, -8)
         .onChange(of: store.isRefreshing) { _, refreshing in
@@ -456,6 +479,22 @@ private struct Footer: View {
         .onAppear {
             if store.isRefreshing { startSpinning() }
         }
+    }
+
+    private static func shortcut(_ keys: String) -> Tip.Row {
+        Tip.Row(L10n.t("快捷键", "Shortcut"), keys)
+    }
+
+    private func settingsTip(_ update: AppUpdate) -> Tip {
+        Tip(rows: [Self.shortcut("⌘,")], note: update.availableVersion.map { L10n.t("新版本 \($0) 可以更新", "Version \($0) is available") })
+    }
+
+    private var refreshTip: Tip {
+        var rows = [Self.shortcut("⌘R")]
+        if let last = store.lastUpdated {
+            rows.insert(Tip.Row(L10n.t("上次同步", "Last sync"), Fmt.relative(last)), at: 0)
+        }
+        return Tip(rows: rows)
     }
 
     /// 至少转一圈；刷新还没完成就接着转，新结果出来后停在整圈处

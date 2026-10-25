@@ -98,6 +98,18 @@ private func after(_ hours: Double, _ minutes: Double = 0, _ seconds: Double = 0
     #expect(yen.split(10, into: [7.5, 2.5]) == ["JP¥1,125", "JP¥375"])
 }
 
+@Test func amountsWithChosenDigits() {
+    let usd = MoneyFormat()
+    // 预计 $1,235 − 已花 $567.89：还剩写到分才减得平
+    #expect(usd.string(667.11, digits: 2) == "$667.11")
+    // 两个数都是整数时还剩也写整数；指定了位数，过了 10000 也照样写到分
+    #expect(usd.string(1_501, digits: 0) == "$1,501")
+    #expect(usd.string(10_432.11, digits: 2) == "$10,432.11")
+    // 日元始终没有小数
+    let yen = MoneyFormat(unit: .jpy, rate: 150)
+    #expect(yen.string(10, digits: 2) == "JP¥1,500")
+}
+
 // MARK: - 本期预计
 
 private func period(days: Int, cost: Double) -> PeriodUsage {

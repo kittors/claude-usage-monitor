@@ -38,23 +38,47 @@ struct SpeedSection: View {
         return L10n.t("\(time) 前 5 分钟 · \(whole(rate.tokensPerSecond)) tok/s", "5 min to \(time) · \(whole(rate.tokensPerSecond)) tok/s")
     }
 
-    /// 悬停说明：这个数是怎么算出来的。耗时精确到 0.1 秒，拿显示出来的数心算也对得上
-    static func help(_ rate: OutputSpeed.Rate?, period: String, note: String? = nil) -> String {
-        let basis = L10n.t(
-            "生成耗时从请求发出算到回复写完，包含排队和等第一个字的时间，所以短回复会显得慢。按 token 加权，短回复对均速的影响小。思考的 token 也算输出。",
-            "Time runs from sending the request to the end of the reply, including the queue and the wait for the first token, so short replies look slow. Weighted by tokens, so short replies barely move the average. Thinking counts as output."
+    /// 一段时间里的回复：几次、输出多少、生成用了多久。耗时精确到 0.1 秒，拿显示出来的数心算也对得上
+    static func breakdown(_ rate: OutputSpeed.Rate) -> [Tip.Row] {
+        let seconds = String(format: "%.1f", rate.duration)
+        return [
+            .init(L10n.t("回复", "Replies"), L10n.t("\(Fmt.grouped(rate.count)) 次", Fmt.grouped(rate.count))),
+            .init(L10n.t("输出", "Output"), "\(Fmt.grouped(rate.output)) tokens"),
+            .init(L10n.t("生成耗时", "Time"), L10n.t("\(seconds) 秒", "\(seconds)s")),
+        ]
+    }
+
+    /// 速度是怎么算的
+    static var basis: String {
+        L10n.t(
+            "速度 = 输出 ÷ 生成耗时，按 token 加权。耗时从请求发出算到回复写完，包含排队和等第一个字，所以短回复显得慢。思考的 token 也算输出。",
+            "Speed = output ÷ time, weighted by tokens. Time runs from sending the request to the end of the reply, including the queue and the wait for the first token, so short replies look slow. Thinking counts as output."
         )
-        var lines: [String] = []
-        if let rate {
-            let seconds = String(format: "%.1f", rate.duration)
-            lines.append(L10n.t(
-                "\(period) \(Fmt.grouped(rate.count)) 次回复：\(Fmt.grouped(rate.output)) tokens ÷ 生成耗时 \(seconds) 秒 = \(whole(rate.tokensPerSecond)) tok/s",
-                "\(period), \(Fmt.grouped(rate.count)) replies: \(Fmt.grouped(rate.output)) tokens ÷ \(seconds)s = \(whole(rate.tokensPerSecond)) tok/s"
+    }
+
+    /// 近 5 分钟的说明。简洁时右边没有最近 1 小时的统计，传进来一起写上；
+    /// 收起后的摘要只看个大概，不带算法说明，面板很矮时也放得下
+    static func recentTip(_ recent: OutputSpeed.Rate?, hour: OutputSpeed.Rate?, model: ModelSpeed?, explains: Bool = true) -> Tip {
+        var rows = recent.map(breakdown) ?? []
+        if let hour {
+            rows.append(.init(
+                L10n.t("最近 1 小时", "Last hour"),
+                L10n.t("\(whole(hour.tokensPerSecond)) tok/s · \(Fmt.grouped(hour.count)) 次", "\(whole(hour.tokensPerSecond)) tok/s · \(Fmt.grouped(hour.count)) replies"),
+                separated: true
             ))
         }
-        if let note { lines.append(note) }
-        lines.append(basis)
-        return lines.joined(separator: "\n")
+        let name = model.map { " · \($0.title)" } ?? ""
+        var notes: [String] = []
+        if recent == nil { notes.append(L10n.t("这 5 分钟里没有写完的回复。", "No reply finished in these 5 minutes.")) }
+        if explains { notes.append(basis) }
+        return Tip(title: L10n.t("近 5 分钟\(name)", "Last 5 min\(name)"), rows: rows, note: notes.isEmpty ? nil : notes.joined(separator: L10n.t("", " ")))
+    }
+
+    /// 详细时右边那两行：最近 1 小时是怎么算出来的
+    static func hourTip(_ hour: OutputSpeed.Rate?, model: ModelSpeed?) -> Tip? {
+        guard let hour else { return nil }
+        let name = model.map { " · \($0.title)" } ?? ""
+        return Tip(title: L10n.t("最近 1 小时\(name)", "Last hour\(name)"), rows: breakdown(hour), note: basis)
     }
 }
 
@@ -88,6 +112,8 @@ private struct SpeedContent: View {
             SpeedStatus(pending: pending, now: now)
         } summary: {
             SpeedSummary(rate: recent, generating: !pending.isEmpty, replied: replied, untimed: untimed)
+                .contentShape(Rectangle())
+                .tip("speed.summary") { summaryTip(recent, requests: requests, model: model, replied: replied, untimed: untimed) }
         } content: {
             if replied {
                 SpeedFigures(
@@ -98,6 +124,18 @@ private struct SpeedContent: View {
                 SpeedEmpty(untimed: untimed, generating: !pending.isEmpty)
             }
         }
+    }
+}
+
+extension SpeedContent {
+    /// 收起后的摘要：近 5 分钟和最近 1 小时的数字，不带算法说明；没有回复时不浮起，Claude Code 太旧时说明怎么办
+    private func summaryTip(_ recent: OutputSpeed.Rate?, requests: [TimedRequest], model: ModelSpeed?, replied: Bool, untimed: Bool) -> Tip? {
+        if untimed {
+            return Tip(L10n.t("2.1.304 起的 Claude Code 会记下每个请求发出的时刻，更新后就能计时", "Claude Code 2.1.304 and later record when each request is sent. Update to time replies."))
+        }
+        guard replied else { return nil }
+        let hour = OutputSpeed.rate(requests, from: now - OutputSpeed.span, to: now)
+        return SpeedSection.recentTip(recent, hour: hour, model: model, explains: false)
     }
 }
 
@@ -120,8 +158,9 @@ private struct SpeedFigures: View {
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     SpeedHeadline(rate: recent)
+                        .tip("speed.recent") { SpeedSection.recentTip(recent, hour: detailed ? nil : hour, model: model) }
                     ZStack(alignment: .leading) {
-                        ModelSwitch(store: store, models: models, current: model)
+                        ModelSwitch(store: store, models: models, current: model, now: now)
                             .opacity(hoveredMoment == nil ? 1 : 0)
                         if let t = hoveredMoment, !detailed {
                             Text(SpeedSection.moment(t, requests: requests))
@@ -135,14 +174,12 @@ private struct SpeedFigures: View {
                 Spacer(minLength: 8)
                 if detailed {
                     HourFigures(rate: hour)
+                        .tip("speed.hour") { SpeedSection.hourTip(hour, model: model) }
                 } else {
+                    // 指着折线时左下那一行换成那一刻的速度，不另外浮起说明，免得挡住折线
                     SpeedSparkline(requests: requests, now: now, hovered: $hoveredMoment)
                         .frame(width: 104, height: 30)
                         .padding(.bottom, 3)
-                        .help(SpeedSection.help(
-                            hour, period: L10n.t("最近 1 小时", "In the last hour"),
-                            note: L10n.t("折线上每一点是那一刻往前 5 分钟的均速，右端就是左边的数字。", "Each point is the 5-minute average up to that moment; the right end is the number on the left.")
-                        ))
                 }
             }
             if detailed {
@@ -234,7 +271,7 @@ private struct SpeedStatus: View {
                         .monospacedDigit()
                 }
                 .transition(.opacity)
-                .help(L10n.t("请求已经发出，回复写完后数字会更新", "The request is out. The number updates when the reply is written."))
+                .tip("speed.pending") { Tip(L10n.t("请求已经发出，回复写完后数字会更新", "The request is out. The number updates when the reply is written.")) }
             }
         }
         .animation(.quiet, value: pending.isEmpty)
@@ -269,7 +306,6 @@ private struct SpeedHeadline: View {
             .lineLimit(1)
             .contentTransition(.numericText(value: Double(value ?? 0)))
             .animation(.smooth(duration: 0.5), value: value)
-            .help(SpeedSection.help(rate, period: L10n.t("近 5 分钟", "In the last 5 minutes")))
     }
 }
 
@@ -278,6 +314,7 @@ private struct ModelSwitch: View {
     let store: UsageStore
     let models: [ModelSpeed]
     let current: ModelSpeed?
+    let now: Double
 
     @State private var hovering = false
 
@@ -298,7 +335,18 @@ private struct ModelSwitch: View {
             guard switchable, let current, let index = models.firstIndex(where: { $0.id == current.id }) else { return }
             withAnimation(.smooth(duration: 0.4)) { store.speedChoice = models[(index + 1) % models.count].id }
         }
-        .help(switchable ? L10n.t("最近 1 小时用了 \(models.count) 个模型，点击切换", "\(models.count) models in the last hour. Click to switch.") : "")
+        .tip("speed.models") { switchable ? modelsTip : nil }
+    }
+
+    /// 几个模型各自最近 1 小时的速度，圆点标出现在显示的那个
+    private var modelsTip: Tip {
+        let rows = models.map { m in
+            let value = OutputSpeed.rate(m.requests, from: now - OutputSpeed.span, to: now).map {
+                L10n.t("\(SpeedSection.whole($0.tokensPerSecond)) tok/s · \(Fmt.grouped($0.count)) 次", "\(SpeedSection.whole($0.tokensPerSecond)) tok/s · \(Fmt.grouped($0.count)) replies")
+            } ?? (m.pending.isEmpty ? "–" : L10n.t("生成中", "Generating"))
+            return Tip.Row(m.title, value, dot: m.id == current?.id ? Palette.accent : Palette.quaternary)
+        }
+        return Tip(title: L10n.t("最近 1 小时用了 \(models.count) 个模型", "\(models.count) models in the last hour"), rows: rows, note: L10n.t("点击换下一个", "Click to show the next one."))
     }
 }
 
@@ -423,7 +471,6 @@ private struct HourFigures: View {
             .lineLimit(1)
             .contentTransition(.numericText())
             .animation(.smooth(duration: 0.5), value: rate)
-            .help(SpeedSection.help(rate, period: L10n.t("最近 1 小时", "In the last hour")))
         }
     }
 }

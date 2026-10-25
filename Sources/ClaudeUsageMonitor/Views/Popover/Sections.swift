@@ -18,9 +18,9 @@ struct LimitsSection: View {
                     .contentTransition(.opacity)
                     .animation(.easeOut(duration: 0.25), value: status)
             }
-            .help(statusHelp(official))
+            .tip("limits.status") { statusTip(official) }
         } summary: {
-            LimitsSummary(rows: rows, fallback: statusText(official, now: Date()), stale: Self.staleReason(official.state))
+            LimitsSummary(rows: rows, fallback: statusText(official, now: Date()), stale: Self.staleReason(official.state), official: official)
         } content: {
             LimitsContent(store: store, prefs: prefs, rows: rows)
         }
@@ -43,14 +43,18 @@ struct LimitsSection: View {
         return "\(synced) · \(reason)"
     }
 
-    private func statusHelp(_ official: OfficialUsageService) -> String {
-        var lines = [L10n.t(
-            "来自 Claude 官方用量接口（与 Claude Code /usage 相同）。Claude Code 正在使用时，消耗够让数字变化就同步；随时可以点「立即刷新」",
-            "From the same endpoint as Claude Code /usage. While Claude Code is in use, it syncs once usage is enough to change the numbers. Refresh works any time."
+    /// 标题右侧的说明：数字从哪来、上次什么时候同步；现在取不到新数字时先写原因
+    private func statusTip(_ official: OfficialUsageService) -> Tip {
+        var notes = [L10n.t(
+            // 「/」后面加不换行的连接符，「/usage」不会断在两行
+            "来自 Claude 官方用量接口，和 Claude Code 的 /\u{2060}usage 相同。Claude Code 正在使用时，消耗够让数字变化就同步；随时可以点「立即刷新」",
+            "From the same endpoint as Claude Code /\u{2060}usage. While Claude Code is in use, it syncs once usage is enough to change the numbers. Refresh works any time."
         )]
-        if let usage = official.usage { lines.append(L10n.t("上次同步：\(Self.moment(usage.fetchedAt))", "Last sync: \(Self.moment(usage.fetchedAt))")) }
-        if official.state != .connected, official.usage != nil { lines.append(Self.unavailableReason(official.state, fetching: official.isFetching)) }
-        return lines.joined(separator: "\n")
+        if official.usage != nil, Self.staleReason(official.state) != nil {
+            notes.insert(Self.unavailableReason(official.state, fetching: official.isFetching), at: 0)
+        }
+        let rows = official.usage.map { [Tip.Row(L10n.t("上次同步", "Last sync"), Self.moment($0.fetchedAt))] } ?? []
+        return Tip(title: L10n.t("官方用量", "Official usage"), rows: rows, note: notes.joined(separator: "\n"))
     }
 
     static func shortReason(_ state: OfficialUsageService.State) -> String {
@@ -164,13 +168,22 @@ private struct LimitsUnavailable: View {
 }
 
 /// 收起后标题右侧：每项的短名字和百分比，百分比和进度条同色。没有数据时写原因。
-/// 现在取不到新数字时（登录失效、请求失败），百分比不上色，后面写上原因，免得把上次的数字当成现在的
+/// 现在取不到新数字时（登录失效、请求失败），百分比不上色，后面写上原因，免得把上次的数字当成现在的。
+/// 悬停时列出每项的全名和什么时候重置，不用展开也能看到
 private struct LimitsSummary: View {
     let rows: [LimitRow]
     let fallback: String
     let stale: String?
+    let official: OfficialUsageService
 
     var body: some View {
+        line
+            .contentShape(Rectangle())
+            .tip("limits.summary") { tip }
+    }
+
+    @ViewBuilder
+    private var line: some View {
         if rows.isEmpty {
             Text(fallback)
         } else {
@@ -192,38 +205,72 @@ private struct LimitsSummary: View {
             }
         }
     }
+
+    private var tip: Tip {
+        // 没有数字时标题右侧只有一句短原因，说明里写全
+        guard !rows.isEmpty else { return Tip(LimitsSection.unavailableReason(official.state, fetching: official.isFetching)) }
+        let now = Date()
+        let items = rows.map { row in
+            Tip.Row(row.title, ["\(row.percent)%", row.resetPhrase(now: now)].compactMap { $0 }.joined(separator: " · "))
+        }
+        var note: String?
+        if let stale, let usage = official.usage {
+            let moment = LimitsSection.moment(usage.fetchedAt)
+            note = L10n.t("现在取不到新数字（\(stale)），显示的是\(moment) 同步的结果", "No fresh numbers right now (\(stale)). Last sync: \(moment).")
+        }
+        return Tip(rows: items, note: note)
+    }
 }
 
-/// 简洁：每项一行，名字、进度条、百分比排成三列，进度条从同一处开始。重置时间和安全线写在悬停说明里
+/// 简洁：每项一行，名字、进度条、百分比排成三列，进度条从同一处开始、到同一处结束。
+/// 全名、重置时间、还剩多久和安全线写在悬停说明里，整行都可以悬停
 private struct CompactLimits: View {
     let rows: [LimitRow]
+
+    /// 行距的一半。每行上下各补这么多当作悬停区域：相邻两行连在一起，从一行移到下一行时说明直接换过去
+    private static let halfGap: CGFloat = 5.5
 
     var body: some View {
         // 安全线随时间前进：5 小时窗口里 1% 是 3 分钟，10 秒走一次就够
         TimelineView(.periodic(from: .now, by: 10)) { context in
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 11) {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(rows) { row in
                     let line = row.paceLine(now: context.date)
                     let color = Palette.level(row.fraction)
-                    let tip = row.compactHelp(line)
-                    GridRow {
-                        Text(row.shortTitle)
-                            .font(.rowLabel)
-                            .foregroundStyle(Palette.text)
-                            .lineLimit(1)
-                            .help(tip)
-                        ThinBar(fraction: row.fraction, color: color, mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false)
-                            .help(tip)
-                        Text("\(row.percent)%")
-                            .font(.rowValue)
-                            .foregroundStyle(color)
-                            .monospacedDigit()
-                            .contentTransition(.numericText(value: row.fraction))
-                            .gridColumnAlignment(.trailing)
-                            .help(tip)
+                    let tip = row.tip(line, now: context.date, detailed: false)
+                    HStack(spacing: 12) {
+                        // 名字和百分比都按这一列里最宽的那个占位
+                        ZStack(alignment: .leading) {
+                            ForEach(rows) { Text($0.shortTitle).hidden() }
+                            Text(row.shortTitle)
+                                .foregroundStyle(Palette.text)
+                        }
+                        .font(.rowLabel)
+                        .lineLimit(1)
+                        // 指着进度条时也提亮安全区；安全线是多少写在下面浮起的说明里
+                        ThinBar(
+                            fraction: row.fraction, color: color,
+                            mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false,
+                            onPoint: { _ in }
+                        )
+                        ZStack(alignment: .trailing) {
+                            ForEach(rows) { Text("\($0.percent)%").hidden() }
+                            Text("\(row.percent)%")
+                                .foregroundStyle(color)
+                                .contentTransition(.numericText(value: row.fraction))
+                        }
+                        .font(.rowValue)
+                        .monospacedDigit()
                     }
+                    .padding(.vertical, Self.halfGap)
+                    .contentShape(Rectangle())
+                    .tip("limit.\(row.id)") { tip }
+                    // 读屏不会悬停：一行读成一句，说明里的内容当作提示读出来
+                    .accessibilityElement(children: .combine)
+                    .accessibilityHint(tip?.plainText ?? "")
                 }
             }
+            .padding(.vertical, -Self.halfGap)
         }
     }
 }
@@ -263,8 +310,6 @@ private struct LimitRowView: View {
                         .monospacedDigit()
                         .contentTransition(.numericText(value: row.fraction))
                 }
-                .contentShape(Rectangle())
-                .help(row.help(line))
                 ThinBar(
                     fraction: row.fraction, color: color,
                     mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false,
@@ -274,6 +319,8 @@ private struct LimitRowView: View {
                     caption(now: context.date, line: line)
                 }
             }
+            .contentShape(Rectangle())
+            .tip("limit.\(row.id)") { row.tip(line, now: context.date, detailed: true, style: style, countdown: countdown) }
         }
         .onChange(of: row.percent) { old, new in
             guard new > old else { return }
@@ -318,8 +365,6 @@ private struct LimitRowView: View {
         .foregroundStyle(Palette.tertiary)
         .monospacedDigit()
         .lineLimit(1)
-        .contentShape(Rectangle())
-        .help(row.help(line))
     }
 
     /// 左边是什么时候重置，右边（打开倒计时时）是还剩多久，精确到秒
@@ -347,20 +392,27 @@ private struct LimitRowView: View {
 }
 
 extension LimitRow {
+    /// 安全线在哪，还能用多少或超了多少：「28.6%」「还可用 2.6%」
+    @MainActor
+    func safeLine(_ line: LimitPace.Line) -> (mark: String, detail: String, alert: Bool) {
+        let mark = Self.percent(line.fraction)
+        if line.isExceeded(by: fraction) {
+            let over = Self.percent(fraction - line.fraction)
+            return (mark, L10n.t("超出 \(over)", "\(over) over"), true)
+        }
+        if fraction > line.fraction {
+            return (mark, L10n.t("窗口刚开始", "Just started"), false)
+        }
+        let left = Self.percent(line.fraction - fraction)
+        return (mark, L10n.t("还可用 \(left)", "\(left) left"), false)
+    }
+
     /// 安全线是多少，还能用多少或超了多少：「安全线 28.6%」「还可用 2.6%」
     @MainActor
     func safeLineNote(_ line: LimitPace.Line?) -> (value: String, detail: String, alert: Bool)? {
         guard let line else { return nil }
-        let value = L10n.t("安全线 \(Self.percent(line.fraction))", "Safe line \(Self.percent(line.fraction))")
-        if line.isExceeded(by: fraction) {
-            let over = Self.percent(fraction - line.fraction)
-            return (value, L10n.t("超出 \(over)", "\(over) over"), true)
-        }
-        if fraction > line.fraction {
-            return (value, L10n.t("窗口刚开始", "Just started"), false)
-        }
-        let left = Self.percent(line.fraction - fraction)
-        return (value, L10n.t("还可用 \(left)", "\(left) left"), false)
+        let s = safeLine(line)
+        return (L10n.t("安全线 \(s.mark)", "Safe line \(s.mark)"), s.detail, s.alert)
     }
 
     /// 保留一位小数，正好是整数时不带：28.6%、50%
@@ -369,43 +421,80 @@ extension LimitRow {
         return tenths.truncatingRemainder(dividingBy: 10) == 0 ? "\(Int(tenths / 10))%" : String(format: "%.1f%%", tenths / 10)
     }
 
-    /// 悬停说明：什么时候重置，安全线在哪、怎么来的，超了多少
+    /// 悬停说明。简洁时一行里只有短名字和百分比：写上全名、重置时刻、还剩多久和安全线。
+    /// 详细时下面那一行写了重置时间（指着进度条时换成安全线），只补那一行没写的，再说明安全线是怎么来的：
+    /// 5 小时用默认写法又没开倒计时，那一行是「2 小时 30 分后重置」，补上具体时刻；每周用默认写法时只写了星期，补上日期；
+    /// 没开倒计时就补上还剩多久
     @MainActor
-    func help(_ line: LimitPace.Line?) -> String {
-        var parts: [String] = []
-        if let resetsAt {
-            parts.append(L10n.t("重置时间：\(LimitsSection.fullDate(resetsAt))（\(LimitsSection.zoneName)）", "Resets \(LimitsSection.fullDate(resetsAt)) (\(LimitsSection.zoneName))"))
+    func tip(_ line: LimitPace.Line?, now: Date, detailed: Bool, style: ResetTimeStyle = .fullDate, countdown: Bool = true) -> Tip? {
+        var rows: [Tip.Row] = []
+        var notes: [String] = []
+        switch reset {
+        case .countdown(let date), .weekday(let date):
+            guard date > now else { break }
+            var fiveHour = false
+            if case .countdown = reset { fiveHour = true }
+            let showsMoment = !detailed || (style == .weekday && !(fiveHour && countdown))
+            let showsLeft = !detailed || (!countdown && !(fiveHour && style == .weekday))
+            if showsMoment {
+                rows.append(.init(L10n.t("重置", "Resets"), LimitsSection.longMoment(date)))
+            }
+            if showsLeft {
+                rows.append(.init(L10n.t("还剩", "Time left"), Fmt.countdown(date.timeIntervalSince(now), showSeconds: false)))
+            }
+        case .elapsed:
+            let at = resetsAt.map { L10n.t("（\(LimitsSection.longMoment($0))）", " (\(LimitsSection.longMoment($0)))") } ?? ""
+            notes.append(L10n.t("已到重置时间\(at)，正在等待同步新窗口的数据", "The reset time\(at) has passed. Waiting for the new window to sync."))
+        case .idle:
+            notes.append(L10n.t("现在没有进行中的 5 小时窗口，下一次请求时开始计时", "No 5-hour window is running. The next request starts one."))
+        case .none:
+            break
         }
-        guard let line else { return parts.joined(separator: "\n") }
-        let mark = Self.percent(line.fraction)
-        if let day = line.day {
-            parts.append(L10n.t(
-                "安全线 \(mark)：今天是这一周的第 \(day) 天，今天结束前用到 \(day)/7 都不会提前用完",
-                "Safe line \(mark): day \(day) of 7, so staying under \(day)/7 by the end of today lasts the week"
-            ))
-        } else {
-            let elapsed = Fmt.countdown(line.elapsed, showSeconds: false)
-            parts.append(L10n.t(
-                "安全线 \(mark)：5 小时已过 \(elapsed)，用量不超过这个比例就能撑到重置",
-                "Safe line \(mark): \(elapsed) of the 5 hours have passed, so staying under this share lasts until the reset"
-            ))
+        if let line {
+            if !detailed {
+                let s = safeLine(line)
+                rows.append(.init(L10n.t("安全线", "Safe line"), "\(s.mark) · \(s.detail)", color: s.alert ? Palette.critical : nil))
+            }
+            notes.append(lineExplanation(line))
         }
-        if line.isExceeded(by: fraction) {
-            let over = Self.percent(fraction - line.fraction)
-            parts.append(L10n.t("已超出 \(over)，照这个速度会在重置前用完", "\(over) over the line. At this pace the limit runs out before the reset"))
-        } else if line.settling, fraction > line.fraction {
-            parts.append(L10n.t("窗口刚开始，先不提示超线", "The window just started, so going over is not flagged yet"))
-        }
-        return parts.joined(separator: "\n")
+        let tip = Tip(title: detailed ? nil : title, rows: rows, note: notes.isEmpty ? nil : notes.joined(separator: "\n"))
+        return tip.isEmpty ? nil : tip
     }
 
-    /// 简洁显示的悬停说明：没有下面那一行，先写全名、百分比和安全线，再接详细的说明
+    /// 进度条上那根白线是怎么来的，超了会怎样
     @MainActor
-    func compactHelp(_ line: LimitPace.Line?) -> String {
-        var first = "\(title) \(percent)%"
-        if let note = safeLineNote(line) { first += " · \(note.value) · \(note.detail)" }
-        let rest = help(line)
-        return rest.isEmpty ? first : "\(first)\n\(rest)"
+    private func lineExplanation(_ line: LimitPace.Line) -> String {
+        var text: String
+        if let day = line.day {
+            text = L10n.t(
+                "进度条上的白线是安全线：今天是这一周的第 \(day) 天，今天结束前用到 \(day)/7 都不会提前用完。",
+                "The white line is the safe line: day \(day) of 7, so staying under \(day)/7 by the end of today lasts the week."
+            )
+        } else {
+            let elapsed = Fmt.countdown(line.elapsed, showSeconds: false)
+            text = L10n.t(
+                "进度条上的白线是安全线：5 小时已过 \(elapsed)，用量不超过它就能撑到重置。",
+                "The white line is the safe line: \(elapsed) of the 5 hours have passed, so staying under it lasts until the reset."
+            )
+        }
+        if line.isExceeded(by: fraction) {
+            text += L10n.t("照这个速度会在重置前用完。", " At this pace the limit runs out before the reset.")
+        } else if line.settling, fraction > line.fraction {
+            text += L10n.t("窗口刚开始，先不提示超线。", " The window just started, so going over is not flagged yet.")
+        }
+        return text
+    }
+
+    /// 收起后的说明里每项一句：今天 22:00 重置、空闲中、已重置
+    @MainActor
+    func resetPhrase(now: Date) -> String? {
+        switch reset {
+        case .countdown(let date), .weekday(let date):
+            date > now ? L10n.t("\(LimitsSection.dayTime(date)) 重置", "resets \(LimitsSection.dayTime(date))") : L10n.t("已重置", "reset")
+        case .elapsed: L10n.t("已重置", "reset")
+        case .idle: L10n.t("空闲中", "idle")
+        case .none: nil
+        }
     }
 }
 
@@ -431,6 +520,16 @@ extension LimitsSection {
         if cal.isDateInToday(rounded) { return L10n.t("今天 \(time)", "today \(time)") }
         if cal.isDateInTomorrow(rounded) { return L10n.t("明天 \(time)", "tomorrow \(time)") }
         return formatter("EEE HH:mm").string(from: rounded)
+    }
+
+    /// 悬停说明里的重置时刻：今天 22:00、明天 22:00、10月31日 周五 22:00
+    static func longMoment(_ date: Date) -> String {
+        let rounded = roundedToMinute(date)
+        let cal = Calendar.autoupdatingCurrent
+        let time = formatter("HH:mm").string(from: rounded)
+        if cal.isDateInToday(rounded) { return L10n.t("今天 \(time)", "Today \(time)") }
+        if cal.isDateInTomorrow(rounded) { return L10n.t("明天 \(time)", "Tomorrow \(time)") }
+        return formatter(Localization.shared.isChinese ? "M月d日 EEE HH:mm" : "EEE, MMM d, HH:mm").string(from: rounded)
     }
 
     /// 2026年10月3日 22:00 / Oct 3, 2026 22:00
@@ -596,10 +695,14 @@ struct CycleSection: View {
                 }
 
                 HStack(alignment: .top, spacing: 0) {
-                    TokenColumn(prefs: prefs, label: L10n.t("新增输入", "Input"), color: Palette.input, figures: figures.mapValues(\.input))
-                    TokenColumn(prefs: prefs, label: L10n.t("输出", "Output"), color: Palette.output, figures: figures.mapValues(\.output))
-                    TokenColumn(prefs: prefs, label: L10n.t("缓存创建", "Cache write"), color: Palette.cacheWrite, figures: figures.mapValues(\.cacheWrite))
-                    TokenColumn(prefs: prefs, label: L10n.t("缓存命中", "Cache read"), color: Palette.cacheRead, figures: figures.mapValues(\.cacheRead))
+                    TokenColumn(prefs: prefs, label: L10n.t("新增输入", "Input"), color: Palette.input, figures: figures.mapValues(\.input),
+                                note: L10n.t("没有命中缓存的新输入，按原价计费", "New input not served from the cache, billed at the full price"))
+                    TokenColumn(prefs: prefs, label: L10n.t("输出", "Output"), color: Palette.output, figures: figures.mapValues(\.output),
+                                note: L10n.t("回复的内容，思考的 token 也算在里面", "The replies, thinking included"))
+                    TokenColumn(prefs: prefs, label: L10n.t("缓存创建", "Cache write"), color: Palette.cacheWrite, figures: figures.mapValues(\.cacheWrite),
+                                note: L10n.t("写进缓存的输入，按输入价的 1.25 倍（5 分钟）或 2 倍（1 小时）计费", "Input written to the cache, billed at 1.25× (5 minutes) or 2× (1 hour) the input price"))
+                    TokenColumn(prefs: prefs, label: L10n.t("缓存命中", "Cache read"), color: Palette.cacheRead, figures: figures.mapValues(\.cacheRead),
+                                note: L10n.t("从缓存读出的输入，单价远低于原价输入", "Input read from the cache, billed far below the full input price"))
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -609,11 +712,13 @@ struct CycleSection: View {
                             .foregroundStyle(Palette.text)
                         Spacer()
                         SpanLayers(prefs: prefs, alignment: .trailing) { s in
-                            if let f = figures[s] { Text(f.saved) }
+                            if let f = figures[s] {
+                                Text(f.saved)
+                                    .tip("spend.saved.\(s.rawValue)") { Tip(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price.")) }
+                            }
                         }
                         .font(.caption)
                         .foregroundStyle(Palette.tertiary)
-                        .help(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price."))
                         SpanLayers(prefs: prefs, alignment: .trailing) { s in
                             if let f = figures[s] {
                                 Text(f.hitRate).contentTransition(.numericText(value: f.hitRateValue))
@@ -675,7 +780,7 @@ private struct SpanFigures {
             result[span] = SpanFigures(
                 range: UsageCalculator.periodRange(start: p.start, end: p.end, calendar: .current, locale: Localization.shared.locale),
                 tokens: Fmt.magnitude(p.tokens.total),
-                tokensHelp: "≈ \(Fmt.grouped(p.tokens.total)) tokens",
+                tokensHelp: L10n.t("共 \(Fmt.grouped(p.tokens.total)) tokens", "\(Fmt.grouped(p.tokens.total)) tokens in total"),
                 requests: L10n.t("\(Fmt.grouped(p.requests)) 次", Fmt.grouped(p.requests)),
                 saved: L10n.t("省 \(money.compact(costs.savings))", "Saved \(money.compact(costs.savings))"),
                 hitRate: Fmt.percent(p.tokens.cacheHitRate, digits: 1),
@@ -737,7 +842,7 @@ private struct SpanAvailable<Content: View>: View {
     }
 }
 
-/// 收起后标题右侧：选中的周期花了多少
+/// 收起后标题右侧：选中的周期花了多少。悬停时写上周期、第几天、预计、还剩和今天
 private struct SpendSummary: View {
     let prefs: Preferences
     let snapshot: UsageSnapshot
@@ -745,6 +850,12 @@ private struct SpendSummary: View {
 
     var body: some View {
         let span = prefs.costSpan
+        line(span)
+            .contentShape(Rectangle())
+            .tip("spend.summary") { tip(span) }
+    }
+
+    private func line(_ span: CostSpan) -> some View {
         HStack(spacing: 4) {
             Text(span.shortTitle)
             if let p = snapshot.period(span) {
@@ -757,6 +868,30 @@ private struct SpendSummary: View {
                 Text(L10n.t("等待同步", "waiting for sync"))
             }
         }
+    }
+
+    private func tip(_ span: CostSpan) -> Tip {
+        guard let p = snapshot.period(span) else {
+            return Tip(L10n.t("本周按官方每周额度的重置时间统计，同步一次后显示", "It follows the official weekly reset and appears after one sync."))
+        }
+        let math = SpendMath(snapshot: snapshot, money: money, now: Date())
+        var rows: [Tip.Row] = []
+        if span != .day {
+            rows.append(.init(L10n.t("进度", "Progress"), L10n.t("第 \(p.dayIndex) / \(p.dayCount) 天", "Day \(p.dayIndex) of \(p.dayCount)")))
+        }
+        if let projected = math.projectedText(p) {
+            rows.append(.init(L10n.t("预计", "Estimate"), projected))
+        }
+        if span == .day {
+            if let runsOut = math.projection(p)?.runsOut {
+                rows.append(.init(L10n.t("每周额度", "Weekly limit"), SpendMath.runsOutNote(runsOut, now: math.now)))
+            }
+        } else {
+            rows.append(math.remainingRow(p))
+            rows.append(.init(L10n.t("今日", "Today"), money.whole(snapshot.today?.cost ?? 0)))
+        }
+        let range = UsageCalculator.periodRange(start: p.start, end: p.end, calendar: .current, locale: Localization.shared.locale)
+        return Tip(title: span.title, rows: rows, note: range)
     }
 }
 
@@ -779,7 +914,8 @@ private struct SpanStat: View {
             .foregroundStyle(Palette.text)
             .monospacedDigit()
         }
-        .help(help[prefs.costSpan] ?? "")
+        .contentShape(Rectangle())
+        .tip("spend.stat.\(label)") { help[prefs.costSpan].map { Tip($0) } }
     }
 }
 
@@ -809,7 +945,7 @@ private struct ModelLists: View {
                 let shown = span == selection
                 Group {
                     if let p = snapshot.period(span), !p.models.isEmpty {
-                        ModelList(models: p.models, total: p.cost, money: money)
+                        ModelList(span: span, models: p.models, total: p.cost, money: money)
                             .padding(.top, 12)
                     } else {
                         Color.clear.frame(height: 0)
@@ -840,6 +976,7 @@ private struct CycleHeader: View {
     var body: some View {
         let money = prefs.money
         let span = prefs.costSpan
+        let math = SpendMath(snapshot: snapshot, money: money, now: now)
         let recent = Array(snapshot.daily.suffix(14))
         // 柱状图里属于这个周期的天：和周期有交集的那几根
         let periodStart = snapshot.period(span).flatMap { p in recent.firstIndex { $0.date.addingTimeInterval(86_400) > p.start } }
@@ -847,13 +984,19 @@ private struct CycleHeader: View {
         HStack(alignment: .bottom, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 // 按基线对齐：某个周期的金额缩小了，也和其它周期站在同一条基线上，下面的日均行不跟着动
+                // 说明挂在每个周期自己那一层上：指着的就是看得见的那串字，隐藏的几层不接收悬停
                 SpanLayers(prefs: prefs, alignment: .leadingFirstTextBaseline) { s in
-                    if let p = snapshot.period(s) { total(p, span: s, money: money) }
+                    if let p = snapshot.period(s) {
+                        total(p, math: math)
+                            .tip("spend.total.\(s.rawValue)") { totalTip(p, span: s, math: math) }
+                    }
                 }
-                .help(snapshot.period(span).map { help($0, span: span, money: money) } ?? "")
                 ZStack(alignment: .leading) {
                     SpanLayers(prefs: prefs) { s in
-                        if let p = snapshot.period(s) { summary(p, span: s, money: money) }
+                        if let p = snapshot.period(s) {
+                            summary(p, span: s, math: math)
+                                .tip("spend.pace.\(s.rawValue)") { paceTip(p, span: s, math: math) }
+                        }
                     }
                     .opacity(hoveredDay == nil ? 1 : 0)
                     if let i = hoveredDay, let day = recent[safe: i] {
@@ -866,21 +1009,22 @@ private struct CycleHeader: View {
                 .lineLimit(1)
             }
             Spacer(minLength: 8)
+            // 指着柱子时左边第二行换成那一天的花费，不另外浮起说明
             MiniBars(values: recent.map(\.cost), highlightIndex: recent.count - 1, periodStart: periodStart, hovered: $hoveredDay)
                 .frame(width: 104, height: 30)
                 .padding(.bottom, 3)
-                .help(L10n.t("最近 14 天", "Last 14 days"))
         }
     }
 
     /// 总额和预计排成一行文字：放不下时两者一起等比缩小，不会把整块内容撑宽
-    private func total(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> some View {
+    private func total(_ p: PeriodUsage, math: SpendMath) -> some View {
+        let money = math.money
         let amount = Text(money.string(p.cost))
             .font(.system(size: 26, weight: .semibold))
             .tracking(-0.4)
             .foregroundStyle(Palette.text)
         var line = amount
-        if let projected = projectedText(p, money: money) {
+        if let projected = math.projectedText(p) {
             let suffix = Text("  " + L10n.t("预计 \(projected)", "→ \(projected)"))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Palette.tertiary)
@@ -898,82 +1042,142 @@ private struct CycleHeader: View {
             }
     }
 
-    /// 本周、本月：每周额度用满时一共多少；今天：照今天的速度到今天结束，每周额度用完就停到下次重置
-    private func projection(_ p: PeriodUsage) -> Projection? {
-        p.projection(now: now, allowance: snapshot.weeklyAllowance)
-    }
-
-    /// 预计的金额。今天还没花钱时不外推
-    private func projectedText(_ p: PeriodUsage, money: MoneyFormat) -> String? {
-        guard let projection = projection(p), p.dayCount > 1 || p.cost > 0 else { return nil }
-        return money.whole(projection.cost)
-    }
-
     /// 多天的周期：第几天，和额度用满还剩多少（预计 − 已花，两个数对得上）；没有额度读数时写日均。
     /// 今天：照今天的速度每周额度会用完时，写上什么时候用完
     @ViewBuilder
-    private func summary(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> some View {
+    private func summary(_ p: PeriodUsage, span: CostSpan, math: SpendMath) -> some View {
         if span == .day {
             let today = L10n.t("当天", "Today")
-            if let runsOut = projection(p)?.runsOut {
-                Text([today, Self.runsOutNote(runsOut, now: now)].joined(separator: " · "))
+            if let runsOut = math.projection(p)?.runsOut {
+                Text([today, SpendMath.runsOutNote(runsOut, now: now)].joined(separator: " · "))
             } else {
                 Text(today)
             }
         } else {
             let day = L10n.t("第 \(p.dayIndex) / \(p.dayCount) 天", "Day \(p.dayIndex) of \(p.dayCount)")
-            Text([day, remainingNote(p, money: money)].joined(separator: " · "))
+            Text([day, math.remainingNote(p)].joined(separator: " · "))
         }
     }
 
-    private func remainingNote(_ p: PeriodUsage, money: MoneyFormat) -> String {
-        guard let projection = projection(p) else {
+    /// 金额的说明。简洁时下面没有 Token 构成、缓存和各模型，一起写在这里；最后是预计的意思
+    private func totalTip(_ p: PeriodUsage, span: CostSpan, math: SpendMath) -> Tip {
+        let money = math.money
+        var rows: [Tip.Row] = []
+        if prefs.spendDisplay == .compact {
+            rows.append(.init(L10n.t("总 Tokens", "Tokens"), Fmt.magnitude(p.tokens.total)))
+            rows.append(.init(L10n.t("请求", "Requests"), L10n.t("\(Fmt.grouped(p.requests)) 次", Fmt.grouped(p.requests))))
+            // 今天的金额就是上面的大数字
+            if span != .day {
+                rows.append(.init(L10n.t("今日", "Today"), money.whole(snapshot.today?.cost ?? 0)))
+            }
+            let saved = L10n.t("省 \(money.compact(p.categories.savings))", "saved \(money.compact(p.categories.savings))")
+            rows.append(.init(L10n.t("缓存命中率", "Cache hit rate"), "\(Fmt.percent(p.tokens.cacheHitRate, digits: 1)) · \(saved)"))
+            for (i, line) in ModelList.lines(p.models, total: p.cost, money: money).enumerated() {
+                rows.append(.init(line.name, "\(line.share) · \(line.amount)", separated: i == 0))
+            }
+        }
+        let currency = L10n.t("点击金额切换货币", "Click the amount to change currency")
+        return Tip(rows: rows, note: [math.meaning(p, span: span), currency].compactMap { $0 }.joined(separator: "\n"))
+    }
+
+    /// 第二行的说明：还剩多少就是预计减去已花，额度用满的金额是怎么折算出来的
+    private func paceTip(_ p: PeriodUsage, span: CostSpan, math: SpendMath) -> Tip? {
+        if span == .day {
+            // 今天这一行只在额度会用完时多写一句
+            guard math.projection(p)?.runsOut != nil else { return nil }
+            return math.dayHelp(p).map { Tip($0) }
+        }
+        guard let projected = math.projectedText(p), let a = snapshot.weeklyAllowance else {
+            return Tip(L10n.t("日均按实际过去的时间算，不足一天按一天算。同步每周限额后这里换成还剩多少", "The daily average uses the time actually passed, at least one day. Once the weekly limit syncs, this shows what is left."))
+        }
+        let rows: [Tip.Row] = [
+            .init(L10n.t("预计", "Estimate"), projected),
+            .init(L10n.t("已花", "Spent"), math.money.string(p.cost)),
+            .init(L10n.t("还剩", "Left"), math.exactRemaining(p) ?? L10n.t("额度已用满", "Limit used up")),
+        ]
+        return Tip(rows: rows, note: math.allowanceBasis(a))
+    }
+}
+
+/// 本期消耗里由金额推出来的几样：预计、还剩、预计的意思和额度的折算。头部、收起后的摘要和它们的说明共用
+private struct SpendMath {
+    let snapshot: UsageSnapshot
+    let money: MoneyFormat
+    let now: Date
+
+    /// 本周、本月：每周额度用满时一共多少；今天：照今天的速度到今天结束，每周额度用完就停到下次重置
+    func projection(_ p: PeriodUsage) -> Projection? {
+        p.projection(now: now, allowance: snapshot.weeklyAllowance)
+    }
+
+    /// 预计的金额。今天还没花钱时不外推
+    func projectedText(_ p: PeriodUsage) -> String? {
+        guard let projection = projection(p), p.dayCount > 1 || p.cost > 0 else { return nil }
+        return money.whole(projection.cost)
+    }
+
+    /// 额度用满还剩多少（美元）：显示出来的预计减去已花，拿面板上的两个数心算对得上。没有额度读数时为 nil
+    func remaining(_ p: PeriodUsage) -> Double? {
+        guard let projection = projection(p) else { return nil }
+        // 已经花到预计（额度用满）时就是 0，不受取整影响
+        guard projection.cost - p.cost >= 0.005 else { return 0 }
+        let shown = money.convert(projection.cost)
+        let rounded = money.unit.fractionDigits == 0 || abs(shown) >= 100 ? shown.rounded() : (shown * 100).rounded() / 100
+        return max(0, rounded / money.rate - p.cost)
+    }
+
+    /// 说明里「预计 − 已花 = 还剩」那一行：两个数都按显示出来的位数取整再相减，按其中更细的位数写，
+    /// 三个数拿来做减法正好对上（第二行只写整数，是它四舍五入的结果）。没有额度读数或已经用满时为 nil
+    @MainActor
+    func exactRemaining(_ p: PeriodUsage) -> String? {
+        guard let projection = projection(p), projection.cost - p.cost >= 0.005 else { return nil }
+        let estimateDigits = money.unit.fractionDigits == 0 || abs(money.convert(projection.cost)) >= 100 ? 0 : 2
+        let spentDigits = money.fractionDigits(for: p.cost)
+        func shown(_ usd: Double, _ digits: Int) -> Double {
+            let scale = pow(10, Double(digits))
+            return (money.convert(usd) * scale).rounded() / scale
+        }
+        let left = max(0, shown(projection.cost, estimateDigits) - shown(p.cost, spentDigits))
+        return money.string(left / money.rate, digits: max(estimateDigits, spentDigits))
+    }
+
+    /// 第二行右半：额度用满还剩多少；没有额度读数时写日均
+    @MainActor
+    func remainingNote(_ p: PeriodUsage) -> String {
+        guard let left = remaining(p) else {
             let daily = money.whole(p.dailyAverage(now: now))
             return L10n.t("日均 \(daily)", "\(daily)/day")
         }
-        let left = projection.cost - p.cost
         guard left >= 0.005 else { return L10n.t("额度已用满", "limit used up") }
         let amount = money.whole(left)
         return L10n.t("还剩 \(amount)", "\(amount) left")
     }
 
-    /// 额度用完的时刻：今天写到分钟，明天写「明天」，一周之内写星期几，再远写日期
-    private static func runsOutNote(_ date: Date, now: Date) -> String {
-        guard date > now else { return L10n.t("额度已用完", "limit reached") }
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: now)
-        if cal.isDate(date, inSameDayAs: now) {
-            let time = LimitsSection.formatter("HH:mm").string(from: date)
-            return L10n.t("\(time) 用完", "runs out \(time)")
-        }
-        if let tomorrow = cal.date(byAdding: .day, value: 1, to: today), cal.isDate(date, inSameDayAs: tomorrow) {
-            return L10n.t("明天用完", "runs out tomorrow")
-        }
-        if let week = cal.date(byAdding: .day, value: 7, to: today), date < week {
-            let weekday = LimitsSection.formatter("EEE").string(from: date)
-            return L10n.t("\(weekday)用完", "runs out \(weekday)")
-        }
-        let day = CycleSection.day(date)
-        return L10n.t("\(day)用完", "runs out \(day)")
+    /// 说明里的同一项，拆成名称和数值
+    @MainActor
+    func remainingRow(_ p: PeriodUsage) -> Tip.Row {
+        guard let left = remaining(p) else { return .init(L10n.t("日均", "Per day"), money.whole(p.dailyAverage(now: now))) }
+        guard left >= 0.005 else { return .init(L10n.t("还剩", "Left"), L10n.t("额度已用满", "Limit used up")) }
+        return .init(L10n.t("还剩", "Left"), money.whole(left))
     }
 
-    private func help(_ p: PeriodUsage, span: CostSpan, money: MoneyFormat) -> String {
-        let currency = L10n.t("点击金额切换货币", "Click the amount to change currency")
-        if span == .day { return [dayHelp(p, money: money), currency].compactMap { $0 }.joined(separator: "\n") }
+    /// 预计是什么意思。今天：照今天的速度一共多少，额度会用完时写明什么时候
+    @MainActor
+    func meaning(_ p: PeriodUsage, span: CostSpan) -> String? {
+        if span == .day { return dayHelp(p) }
         guard let projection = projection(p), let a = snapshot.weeklyAllowance else {
-            let pending = L10n.t("同步每周限额后显示预计：每周额度用满时本机一共花多少", "The estimate appears once the weekly limit syncs: what this Mac spends with the weekly limit fully used")
-            return "\(pending)\n\(currency)"
+            return L10n.t("同步每周限额后显示预计：每周额度用满时本机一共花多少", "The estimate appears once the weekly limit syncs: what this Mac spends with the weekly limit fully used")
         }
         let projected = money.whole(projection.cost)
         let full = money.whole(a.full)
-        let meaning = span == .week
+        return span == .week
             ? L10n.t("预计 \(projected)：本周额度用满（100%）时本机一共花多少，不管用得快慢", "\(projected) is what this Mac spends with this week's limit fully used, however fast you go")
             : L10n.t("预计 \(projected)：已经花的 \(money.string(p.cost))，加上之后每周都用满（每周约 \(full)，跨出这个周期的那一周按时间折算）", "\(projected): \(money.string(p.cost)) spent, plus every week after this used in full (about \(full) a week, prorated where a week runs past the period)")
-        return "\(meaning)\n\(allowanceBasis(a, money: money))\n\(currency)"
     }
 
     /// 额度用满的金额是怎么折算出来的
-    private func allowanceBasis(_ a: WeeklyAllowance, money: MoneyFormat) -> String {
+    @MainActor
+    func allowanceBasis(_ a: WeeklyAllowance) -> String {
         let percent = Int(a.utilization.rounded(.down))
         let full = money.whole(a.full)
         let spent = money.string(a.syncedCost)
@@ -993,7 +1197,8 @@ private struct CycleHeader: View {
     }
 
     /// 今天：照今天到现在的速度今天一共多少；每周额度会在今天用完时写明什么时候
-    private func dayHelp(_ p: PeriodUsage, money: MoneyFormat) -> String? {
+    @MainActor
+    func dayHelp(_ p: PeriodUsage) -> String? {
         guard p.cost > 0, let projection = projection(p) else { return nil }
         let projected = money.whole(projection.cost)
         guard let runsOut = projection.runsOut else {
@@ -1005,6 +1210,27 @@ private struct CycleHeader: View {
         }
         let moment = LimitsSection.formatter(Localization.shared.isChinese ? "M月d日 HH:mm" : "MMM d, HH:mm").string(from: runsOut)
         return L10n.t("照今天到现在的速度，每周额度会在 \(moment) 前后用完；\(stop)，今天预计一共 \(projected)", "At today's pace so far, the weekly limit runs out around \(moment) and \(stop): about \(projected) today")
+    }
+
+    /// 额度用完的时刻：今天写到分钟，明天写「明天」，一周之内写星期几，再远写日期
+    @MainActor
+    static func runsOutNote(_ date: Date, now: Date) -> String {
+        guard date > now else { return L10n.t("额度已用完", "limit reached") }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: now)
+        if cal.isDate(date, inSameDayAs: now) {
+            let time = LimitsSection.formatter("HH:mm").string(from: date)
+            return L10n.t("\(time) 用完", "runs out \(time)")
+        }
+        if let tomorrow = cal.date(byAdding: .day, value: 1, to: today), cal.isDate(date, inSameDayAs: tomorrow) {
+            return L10n.t("明天用完", "runs out tomorrow")
+        }
+        if let week = cal.date(byAdding: .day, value: 7, to: today), date < week {
+            let weekday = LimitsSection.formatter("EEE").string(from: date)
+            return L10n.t("\(weekday)用完", "runs out \(weekday)")
+        }
+        let day = CycleSection.day(date)
+        return L10n.t("\(day)用完", "runs out \(day)")
     }
 }
 
@@ -1023,6 +1249,8 @@ private struct TokenColumn: View {
     let label: String
     let color: Color
     let figures: [CostSpan: Figure]
+    /// 这一类是什么、怎么计费
+    let note: String
 
     @State private var hovering = false
 
@@ -1051,54 +1279,91 @@ private struct TokenColumn: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onHover { h in withAnimation(.quiet) { hovering = h } }
-        .help(figures[selection].map { L10n.t("\(label)：\(Fmt.grouped($0.tokens)) tokens · 约 \(prefs.money.string($0.cost))", "\(label): \(Fmt.grouped($0.tokens)) tokens · about \(prefs.money.string($0.cost))") } ?? "")
+        // 指着时这一列已经换成折算的金额，说明里只写准确的 token 数和怎么计费
+        .tip("spend.token.\(label)") {
+            figures[prefs.costSpan].map { Tip(title: label, rows: [.init("Tokens", Fmt.grouped($0.tokens))], note: note) }
+        }
     }
 }
 
 /// 本期按模型的费用（最多 3 行，其余合并）。占比加起来正好 100%，金额加起来正好是上面的总额。
+/// 指着一行时写上请求次数和 tokens；「其他」列出合并了哪几个模型
 private struct ModelList: View {
+    let span: CostSpan
     let models: [ModelUsage]
     let total: Double
     let money: MoneyFormat
 
-    private struct Entry: Identifiable {
-        let id: String
-        let cost: Double
+    struct Line {
+        let name: String
+        let share: String
+        let amount: String
         let estimated: Bool
+        /// 这一行算进去的模型，「其他」是合并起来的几个
+        let models: [ModelUsage]
+    }
+
+    /// 最多 3 行：超过 3 个模型时展示前 2 个 + 其他
+    @MainActor
+    static func lines(_ models: [ModelUsage], total: Double, money: MoneyFormat) -> [Line] {
+        let keep = models.count > 3 ? 2 : models.count
+        var groups = models.prefix(keep).map { (name: $0.displayName, models: [$0], estimated: $0.isEstimated) }
+        let merged = Array(models.dropFirst(keep))
+        if merged.reduce(0, { $0 + $1.cost }) > 0.005 { groups.append((L10n.t("其他", "Other"), merged, false)) }
+        let costs = groups.map { $0.models.reduce(0) { $0 + $1.cost } }
+        let shares = Fmt.shares(costs)
+        let amounts = money.split(total, into: costs)
+        return groups.indices.map { i in
+            Line(name: groups[i].name, share: shares[i], amount: amounts[i], estimated: groups[i].estimated, models: groups[i].models)
+        }
     }
 
     var body: some View {
-        // 最多 3 行：超过 3 个模型时展示前 2 个 + 其他
-        let keep = models.count > 3 ? 2 : models.count
-        var entries = models.prefix(keep).map { Entry(id: $0.displayName, cost: $0.cost, estimated: $0.isEstimated) }
-        let rest = models.dropFirst(keep).reduce(0) { $0 + $1.cost }
-        if rest > 0.005 { entries.append(Entry(id: L10n.t("其他", "Other"), cost: rest, estimated: false)) }
-        let shares = Fmt.shares(entries.map(\.cost))
-        let amounts = money.split(total, into: entries.map(\.cost))
+        let lines = Self.lines(models, total: total, money: money)
         return VStack(spacing: 5) {
-            ForEach(Array(entries.enumerated()), id: \.element.id) { i, entry in
-                row(entry, share: shares[i], amount: amounts[i])
+            ForEach(Array(lines.enumerated()), id: \.element.name) { i, line in
+                row(line)
+                    .contentShape(Rectangle())
+                    // 按位置编号：两个模型显示名相同时也不会认错是哪一行
+                    .tip("model.\(span.rawValue).\(i)") { tip(line) }
             }
         }
     }
 
-    private func row(_ entry: Entry, share: String, amount: String) -> some View {
+    private func row(_ line: Line) -> some View {
         HStack(spacing: 8) {
-            Text(entry.id)
+            Text(line.name)
                 .foregroundStyle(Palette.secondary)
-            if entry.estimated {
+            if line.estimated {
                 Text(L10n.t("估价", "est.")).foregroundStyle(Palette.quaternary)
             }
             Spacer()
-            Text(share)
+            Text(line.share)
                 .foregroundStyle(Palette.tertiary)
                 .frame(width: 44, alignment: .trailing)
-            Text(amount)
+            Text(line.amount)
                 .foregroundStyle(Palette.text)
                 .frame(minWidth: 64, alignment: .trailing)
         }
         .font(.system(size: 11.5))
         .monospacedDigit()
+    }
+
+    private func tip(_ line: Line) -> Tip {
+        func usage(_ m: ModelUsage) -> String {
+            L10n.t("\(Fmt.grouped(m.requests)) 次 · \(Fmt.magnitude(m.tokens.total)) tokens", "\(Fmt.grouped(m.requests)) requests · \(Fmt.magnitude(m.tokens.total)) tokens")
+        }
+        if line.models.count == 1, let m = line.models.first {
+            let note = m.isEstimated ? L10n.t("价目表里还没有这个模型的官方价格，金额是估算的", "There is no official price for this model yet, so the amount is an estimate.") : nil
+            return Tip(title: line.name, rows: [
+                .init(L10n.t("请求", "Requests"), L10n.t("\(Fmt.grouped(m.requests)) 次", Fmt.grouped(m.requests))),
+                .init("Tokens", Fmt.magnitude(m.tokens.total)),
+            ], note: note)
+        }
+        return Tip(
+            title: L10n.t("其他 \(line.models.count) 个模型", "\(line.models.count) other models"),
+            rows: line.models.map { Tip.Row($0.displayName, usage($0)) }
+        )
     }
 }
 

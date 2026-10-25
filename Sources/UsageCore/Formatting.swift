@@ -178,6 +178,11 @@ public struct MoneyFormat: Sendable, Equatable {
         return symbol + number(v)
     }
 
+    /// 指定保留几位小数（日元、韩元始终不带小数）。由几个显示出来的金额算出的数，按它们里最细的位数显示，才减得平
+    public func string(_ usd: Double, digits: Int) -> String {
+        symbol + Self.number(convert(usd), digits: unit.fractionDigits == 0 ? 0 : digits)
+    }
+
     /// 仅数字部分
     public func number(_ value: Double) -> String {
         Self.number(value, digits: unit.fractionDigits == 0 ? 0 : (abs(value) >= 10_000 ? 0 : 2))

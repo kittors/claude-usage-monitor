@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-10-25
+
+### Changed
+
+- Tooltips in the panel show after a short pause instead of the system's second or two, and moving from one item to the next switches them straight away. The panel draws them in its own style; the system tooltips it used before often did not show at all while the app was in the background.
+- Simple layouts keep their details in tooltips. A limit shows its full name, when it resets, the time left, and where the safe line is with how much is left or how far over you are. Output speed shows the replies, tokens and time behind the number, plus the last hour. The spend amount lists tokens, requests, today, the cache hit rate and each model.
+- Folded sections show their details on hover too: when each limit resets, the last 5 minutes and the last hour, or the period's day, estimate, what is left and today. The folded process list shows each process and its memory.
+- Pointing at the line under the spend amount shows the estimate, what is spent and what is left, with how the full-week amount was worked out. Pointing at a token type says how it is billed, Other lists the models it groups, each model shows its requests and tokens, and the footer buttons show their shortcuts.
+
+### Fixed
+
+- What is left under the spend amount is the estimate as shown minus what is spent, so the numbers add up. It used the unrounded estimate and could be a dollar off.
+
 ## [1.6.3] - 2026-10-25
 
 ### Fixed

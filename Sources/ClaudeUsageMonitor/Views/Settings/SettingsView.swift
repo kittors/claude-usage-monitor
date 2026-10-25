@@ -386,8 +386,8 @@ private struct PanelPage: View {
             Hairline()
             sectionRow(.spend, title: L10n.t("本期消耗", "Spend"), selection: $prefs.spendDisplay)
             Text(L10n.t(
-                "在面板里点区块的标题可以收起或展开，收起后标题右侧显示摘要。",
-                "In the panel, click a section's title to collapse or expand it. A collapsed section shows a summary beside its title."
+                "在面板里点区块的标题可以收起或展开，收起后标题右侧显示摘要。简洁和收起时，指针停一下就能看到细节。",
+                "In the panel, click a section's title to collapse or expand it; a collapsed section shows a summary beside its title. Point at simple or collapsed sections for details."
             ))
                 .font(.system(size: 11))
                 .foregroundStyle(Palette.tertiary)

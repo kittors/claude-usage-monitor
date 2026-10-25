@@ -169,9 +169,13 @@ private struct NetworkPlaceRow: View {
         }
     }
 
-    /// 官方请求暂停（出口在中国大陆、香港、澳门，或无法确认），或者 IPv6 直连。选了「异常时」也要显示
+    /// 官方请求暂停（出口在中国大陆、香港、澳门，或无法确认），或者 IPv6 直连。选了「异常时」也要显示。
+    /// 跟着菜单栏盾牌判断：风险出口重新确认时地址会先清掉，盾牌保持警示，这一行也不能闪没
     static func hasIssue(_ network: NetworkPlace) -> Bool {
-        network.ipv6IsDirect || network.failed || network.place?.restrictsUsage == true
+        switch network.menuShield {
+        case .risk, .severe: true
+        case .none, .safe, .loading: false
+        }
     }
 
     /// 确认中显示骨架，结果出来后在原地淡入。两者行高、各元素的位置都相同，切换时这一行不会跳动。

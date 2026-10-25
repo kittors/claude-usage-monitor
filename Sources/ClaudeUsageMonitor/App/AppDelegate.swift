@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { menuBar.show() }
         }
         if let index = CommandLine.arguments.firstIndex(of: "--settings") {
-            // 可以跟一个标签页：--settings display
+            // 可以跟一个标签页：--settings menuBar、--settings panel
             let arguments = CommandLine.arguments
             if index + 1 < arguments.count, let tab = SettingsTab(rawValue: arguments[index + 1]) {
                 SettingsNavigation.shared.tab = tab

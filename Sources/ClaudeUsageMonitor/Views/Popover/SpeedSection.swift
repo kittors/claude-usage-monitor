@@ -81,11 +81,13 @@ private struct SpeedContent: View {
         let recent = OutputSpeed.rate(requests, from: now - OutputSpeed.recent, to: now)
         // 最近 1 小时哪个模型都没有写完的回复：不画空图表，只说明一句
         let replied = models.contains { ($0.requests.last?.end ?? 0) > now - OutputSpeed.span }
+        // Claude Code 太旧，回复里没有请求发出的时刻
+        let untimed = !replied && (log.lastUntimed ?? 0) > now - OutputSpeed.span
 
         CollapsibleSection(.speed, title: L10n.t("输出速度", "Output speed"), prefs: prefs, spacing: 10) {
             SpeedStatus(pending: pending, now: now)
         } summary: {
-            SpeedSummary(rate: recent, generating: !pending.isEmpty, replied: replied)
+            SpeedSummary(rate: recent, generating: !pending.isEmpty, replied: replied, untimed: untimed)
         } content: {
             if replied {
                 SpeedFigures(
@@ -93,8 +95,6 @@ private struct SpeedContent: View {
                     hoveredMoment: $hoveredMoment, hoveredReply: $hoveredReply
                 )
             } else {
-                // Claude Code 太旧，回复里没有请求发出的时刻
-                let untimed = (log.lastUntimed ?? 0) > now - OutputSpeed.span
                 SpeedEmpty(untimed: untimed, generating: !pending.isEmpty)
             }
         }
@@ -153,6 +153,11 @@ private struct SpeedFigures: View {
                 }
             }
         }
+        // 换成说明或收起时，指针离开的事件不会再来，悬停留下的时刻要清掉
+        .onDisappear {
+            hoveredMoment = nil
+            hoveredReply = nil
+        }
     }
 }
 
@@ -185,6 +190,7 @@ private struct SpeedSummary: View {
     let rate: OutputSpeed.Rate?
     let generating: Bool
     let replied: Bool
+    let untimed: Bool
 
     var body: some View {
         HStack(spacing: 5) {
@@ -202,6 +208,8 @@ private struct SpeedSummary: View {
                     .contentTransition(.numericText(value: rate.tokensPerSecond.rounded()))
             } else if generating {
                 Text(L10n.t("生成中", "Generating"))
+            } else if untimed {
+                Text(L10n.t("更新 Claude Code 后才能计时", "Update Claude Code to time replies"))
             } else {
                 Text(replied ? L10n.t("近 5 分钟没有回复", "No replies in 5 min") : L10n.t("最近 1 小时没有回复", "No replies in the last hour"))
             }

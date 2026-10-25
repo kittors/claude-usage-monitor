@@ -20,7 +20,7 @@ struct LimitsSection: View {
             }
             .help(statusHelp(official))
         } summary: {
-            LimitsSummary(rows: rows, fallback: statusText(official, now: Date()))
+            LimitsSummary(rows: rows, fallback: statusText(official, now: Date()), stale: Self.staleReason(official.state))
         } content: {
             LimitsContent(store: store, prefs: prefs, rows: rows)
         }
@@ -79,6 +79,14 @@ struct LimitsSection: View {
         case .expired: L10n.t("Claude Code 的登录已过期。开启「设置 › 用量 › 自动续期登录」，或重新登录。", "The Claude Code login has expired. Turn on automatic renewal in Settings > Usage, or sign in again.")
         case .signedOut: L10n.t("Claude Code 的登录已失效（登录到期或已退出），重新登录后自动恢复。", "The Claude Code login is no longer valid. Sign in again and this app recovers.")
         case .failed(let message): L10n.t("暂时无法获取官方用量（\(message)），稍后自动重试。", "Official usage is unavailable (\(message)). Retrying shortly.")
+        }
+    }
+
+    /// 显示的是上次同步的数字、现在取不到新的：登录失效、没有授权或请求失败。正在连接不算
+    static func staleReason(_ state: OfficialUsageService.State) -> String? {
+        switch state {
+        case .connected, .connecting, .disabled: nil
+        default: shortReason(state)
         }
     }
 
@@ -155,10 +163,12 @@ private struct LimitsUnavailable: View {
     }
 }
 
-/// 收起后标题右侧：每项的短名字和百分比，百分比和进度条同色。没有数据时写原因
+/// 收起后标题右侧：每项的短名字和百分比，百分比和进度条同色。没有数据时写原因。
+/// 现在取不到新数字时（登录失效、请求失败），百分比不上色，后面写上原因，免得把上次的数字当成现在的
 private struct LimitsSummary: View {
     let rows: [LimitRow]
     let fallback: String
+    let stale: String?
 
     var body: some View {
         if rows.isEmpty {
@@ -170,10 +180,14 @@ private struct LimitsSummary: View {
                         Text(row.shortTitle)
                         Text("\(row.percent)%")
                             .fontWeight(.medium)
-                            .foregroundStyle(Palette.level(row.fraction))
+                            .foregroundStyle(stale == nil ? Palette.level(row.fraction) : Palette.secondary)
                             .monospacedDigit()
                             .contentTransition(.numericText(value: row.fraction))
                     }
+                }
+                if let stale {
+                    Text(stale)
+                        .foregroundStyle(Palette.warning)
                 }
             }
         }

@@ -17,6 +17,11 @@ struct CollapsibleSection<Status: View, Summary: View, Content: View>: View {
 
     /// 内容在不在视图里：收起的动画播完才变成 false
     @State private var mounted: Bool
+    /// 每点一次加一。收起动画播完时还是同一次，才把内容拿掉：连点「收起、展开、收起」时，
+    /// 第一次的回调会落在第二次收起的中途
+    @State private var toggles = 0
+    /// 裁剪框比内容左右各宽出这么多（面板的左右边距），贴边画的圆点、按钮的悬停底色不会被切掉
+    private static var slack: CGFloat { Metrics.padding }
 
     init(
         _ section: PanelSection, title: String, prefs: Preferences, spacing: CGFloat = 12,
@@ -48,11 +53,16 @@ struct CollapsibleSection<Status: View, Summary: View, Content: View>: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 if mounted {
-                    content.padding(.top, spacing)
+                    // 内容总按自己的高度排：高度 0 会一路传给里面，能缩放的金额会跟着缩小、下面的内容跟着跳
+                    content
+                        .padding(.top, spacing)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .padding(.horizontal, Self.slack)
             .frame(height: collapsed ? 0 : nil, alignment: .top)
             .clipped()
+            .padding(.horizontal, -Self.slack)
             .opacity(collapsed ? 0 : 1)
             .allowsHitTesting(!collapsed)
             .accessibilityHidden(collapsed)
@@ -61,17 +71,18 @@ struct CollapsibleSection<Status: View, Summary: View, Content: View>: View {
 
     /// 和进程列表一样，状态必须在动画事务里切换，下方内容才会和这一块一起移动
     private func toggle() {
+        toggles += 1
         if prefs.isCollapsed(section) {
             withAnimation(.disclosure) {
                 mounted = true
                 prefs.setCollapsed(section, false)
             }
         } else {
+            let current = toggles
             withAnimation(.disclosure) {
                 prefs.setCollapsed(section, true)
             } completion: {
-                // 这期间又展开了就留着
-                if prefs.isCollapsed(section) { mounted = false }
+                if toggles == current { mounted = false }
             }
         }
     }

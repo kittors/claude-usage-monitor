@@ -55,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    private let presentation = SettingsPresentation()
+    private var occlusionObserver: NSObjectProtocol?
 
     func show(prefs: Preferences, store: UsageStore) {
         if window == nil {
@@ -72,16 +74,32 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window.isOpaque = false
             window.backgroundColor = .clear
             window.delegate = self
-            let host = NSHostingView(rootView: SettingsView(prefs: prefs, store: store))
+            let host = NSHostingView(rootView: SettingsView(prefs: prefs, store: store, presentation: presentation))
             host.sizingOptions = []
             window.contentView = host
             window.center()
             self.window = window
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateVisibility() }
+            }
         }
         // 菜单栏 App 从非激活面板打开窗口时，协作式激活可能不会让出前台，需要显式置前
         window?.title = L10n.t("Claude Usage Monitor 设置", "Claude Usage Monitor Settings")
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
+        // 遮挡状态稍后才会更新，先当作看得见
+        presentation.isVisible = true
+    }
+
+    private func updateVisibility() {
+        guard let window else { return }
+        presentation.isVisible = window.isVisible && window.occlusionState.contains(.visible)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        presentation.isVisible = false
     }
 }

@@ -82,11 +82,21 @@ private struct PanelVisibleKey: EnvironmentKey {
     static let defaultValue = true
 }
 
+private struct SettingsVisibleKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
 extension EnvironmentValues {
     /// 弹窗当前是否可见
     var panelVisible: Bool {
         get { self[PanelVisibleKey.self] }
         set { self[PanelVisibleKey.self] = newValue }
+    }
+
+    /// 设置窗口在不在屏幕上：被完全挡住、最小化或关掉时，里面按时间刷新的内容停下
+    var settingsVisible: Bool {
+        get { self[SettingsVisibleKey.self] }
+        set { self[SettingsVisibleKey.self] = newValue }
     }
 }
 

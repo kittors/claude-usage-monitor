@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-10-25
+
+### Fixed
+
+- Output speed in Settings › Menu Bar moves with the clock, as it does in the panel. While the window is on screen, the speed value and the menu bar preview are worked out again every second, so they no longer wait for the next reply while older replies slide out of the last 5 minutes, which left them a few tokens per second behind the panel. The menu bar itself now checks every second instead of every 5 seconds, so all three show the same number.
+- With no replies in the last 5 minutes, the speed value in Settings › Menu Bar shows "–" like the menu bar, instead of a sample 64.
+
 ## [1.6.2] - 2026-10-25
 
 ### Added

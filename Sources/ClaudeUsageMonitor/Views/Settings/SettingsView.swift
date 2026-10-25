@@ -44,10 +44,18 @@ final class SettingsNavigation {
     }
 }
 
+/// 设置窗口在不在屏幕上（由 `SettingsWindowController` 驱动）
+@MainActor
+@Observable
+final class SettingsPresentation {
+    var isVisible = false
+}
+
 /// 设置窗口：与弹窗一致的暗色毛玻璃 + 顶部图标标签页。
 struct SettingsView: View {
     @Bindable var prefs: Preferences
     let store: UsageStore
+    let presentation: SettingsPresentation
 
     @Bindable private var navigation = SettingsNavigation.shared
 
@@ -84,6 +92,7 @@ struct SettingsView: View {
             .ignoresSafeArea()
         }
         .environment(\.colorScheme, .dark)
+        .environment(\.settingsVisible, presentation.isVisible)
         .animation(.quiet, value: tab)
     }
 }
@@ -450,6 +459,7 @@ private struct MenuBarItemsRow: View {
     /// 想取消最后一项时轻轻晃一下
     @State private var refused: MenuBarItem?
     @State private var refusals = 0
+    @Environment(\.settingsVisible) private var visible
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -467,7 +477,10 @@ private struct MenuBarItemsRow: View {
                 separator
                 ForEach([MenuBarItem.todayCost, .weekCost, .monthCost]) { column($0) }
                 separator
-                column(.speed)
+                // 速度和面板、菜单栏一样每秒重算：没有新回复时，旧的回复也会滑出近 5 分钟
+                TimelineView(.animation(minimumInterval: 1, paused: !visible)) { _ in
+                    column(.speed)
+                }
             }
             .padding(3)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.black.opacity(0.22)))
@@ -515,7 +528,7 @@ private struct MenuBarItemsRow: View {
         }
     }
 
-    /// 还没有数据时的示意数值
+    /// 还没有数据时的示意数值。速度不用示意值：近 5 分钟没有回复很常见，那时菜单栏写「–」，这里也一样
     static func sample(_ item: MenuBarItem, money: MoneyFormat) -> StatusIconRenderer.Value {
         switch item {
         case .fiveHour: .init(label: item.shortLabel, text: "42%", fraction: 0.42)
@@ -524,7 +537,7 @@ private struct MenuBarItemsRow: View {
         case .todayCost: .init(label: item.shortLabel, text: money.compact(12), fraction: nil)
         case .weekCost: .init(label: item.shortLabel, text: money.compact(86), fraction: nil)
         case .monthCost: .init(label: item.shortLabel, text: money.compact(1234), fraction: nil)
-        case .speed: .init(label: item.shortLabel, text: "64", fraction: nil)
+        case .speed: .init(label: item.shortLabel, text: "–", fraction: nil)
         }
     }
 }
@@ -606,28 +619,23 @@ private struct MenuBarPreview: View {
     let store: UsageStore
     var hovered: MenuBarItem?
 
+    @Environment(\.settingsVisible) private var visible
+
     var body: some View {
         let network = NetworkPlace.shared
-        let money = prefs.money
         let selected = prefs.menuBarItems
         let showsValues = prefs.menuBarStyle == .iconPercent || prefs.menuBarStyle == .ringPercent
         let candidate = showsValues ? hovered.flatMap { selected.contains($0) ? nil : $0 } : nil
         let items = MenuBarItem.ordered(selected + (candidate.map { [$0] } ?? []))
-        let values: [StatusIconRenderer.Value] = items.map { item in
-            var value = store.menuBarValue(item, money: money) ?? MenuBarItemsRow.sample(item, money: money)
-            if item == candidate {
-                value.emphasis = 0.4
-            } else if let hovered, selected.contains(hovered), selected.count > 1, item != hovered {
-                value.emphasis = 0.3
-            }
-            return value
-        }
-        let limits = values.compactMap(\.fraction)
         let shield = network.menuShield
         let loading = prefs.showExitSafety && shield == .loading
+        // 确认出口时每秒 30 帧转盾牌；显示速度时和面板、菜单栏一样每秒重算一次；其余时候不走
+        let speed = showsValues && items.contains(.speed)
         // 和菜单栏上的 Clawd 同一帧
         let frame = MascotAnimator.shared.frame
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !loading)) { context in
+        TimelineView(.animation(minimumInterval: loading ? 1.0 / 30.0 : 1, paused: !visible || !(loading || speed))) { context in
+            let values = currentValues(items, selected: selected, candidate: candidate)
+            let limits = values.compactMap(\.fraction)
             let phase = loading
                 ? CGFloat(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.13) / 1.13) * .pi * 2
                 : 0
@@ -648,12 +656,26 @@ private struct MenuBarPreview: View {
                 Capsule().fill(Color.white.opacity(0.18)).frame(width: 22, height: 4)
                 Text("9:41").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.secondary)
             }
+            .animation(.quiet, value: values.map { "\($0.label)\($0.text)\($0.emphasis)" })
         }
         .padding(.horizontal, 14)
         .frame(height: 30)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.05)))
-        .animation(.quiet, value: values.map { "\($0.label)\($0.text)\($0.emphasis)" })
         .animation(.quiet, value: shield)
+    }
+
+    /// 每一列此刻的数值：放进来看看效果的那一列半亮，指针停在已选的一列上时其余几列变暗
+    private func currentValues(_ items: [MenuBarItem], selected: [MenuBarItem], candidate: MenuBarItem?) -> [StatusIconRenderer.Value] {
+        let money = prefs.money
+        return items.map { item in
+            var value = store.menuBarValue(item, money: money) ?? MenuBarItemsRow.sample(item, money: money)
+            if item == candidate {
+                value.emphasis = 0.4
+            } else if let hovered, selected.contains(hovered), selected.count > 1, item != hovered {
+                value.emphasis = 0.3
+            }
+            return value
+        }
     }
 }
 

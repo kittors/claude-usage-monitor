@@ -198,18 +198,18 @@ final class MenuBarController: NSObject {
         updateSpeedTicker(showsSpeed)
     }
 
-    /// 没有新回复时，旧的请求也会滑出近 5 分钟：每 5 秒算一次，数字变了才重画
+    /// 没有新回复时，旧的请求也会滑出近 5 分钟：和面板、设置页一样每秒算一次，数字变了才重画
     private func updateSpeedTicker(_ on: Bool) {
         if on {
             guard speedTicker == nil else { return }
-            let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     let text = self.store.menuBarValue(.speed, money: self.prefs.money)?.text ?? "–"
                     if text != self.shownSpeed { self.renderIcon() }
                 }
             }
-            timer.tolerance = 1
+            timer.tolerance = 0.2
             RunLoop.main.add(timer, forMode: .common)
             speedTicker = timer
         } else if speedTicker != nil {

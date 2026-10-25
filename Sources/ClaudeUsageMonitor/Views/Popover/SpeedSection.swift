@@ -4,7 +4,7 @@ import UsageCore
 // MARK: - 输出速度
 
 /// 输出速度。简洁时和本期消耗的头部同一个格局：左边是近 5 分钟的加权均速，右边是最近 1 小时里它的变化；
-/// 在设置里选「每次回复」时，右边换成最近 1 小时的统计，下面画出每一次回复。
+/// 详细时右边换成最近 1 小时的统计，下面画出每一次回复。最近 1 小时没有回复时只写一句说明，不画空图。
 /// 会话记录要等整条回复结束才写，所以每次回复结束数字才变；生成中只知道发出了多久
 struct SpeedSection: View {
     let store: UsageStore
@@ -13,7 +13,7 @@ struct SpeedSection: View {
     @Environment(\.panelVisible) private var visible
     /// 简洁：指针停在折线的哪个时刻
     @State private var hoveredMoment: Double?
-    /// 每次回复：指针停在哪一次回复上
+    /// 详细：指针停在哪一次回复上
     @State private var hoveredReply: UInt64?
 
     var body: some View {
@@ -21,7 +21,7 @@ struct SpeedSection: View {
         // 每秒走一格：生成中的秒数、时间轴左移、滑出近 5 分钟的回复。面板收起时停下
         TimelineView(.animation(minimumInterval: 1, paused: !visible)) { context in
             SpeedContent(
-                store: store, now: context.date.timeIntervalSince1970, detailed: detailed,
+                store: store, prefs: prefs, now: context.date.timeIntervalSince1970, detailed: detailed,
                 hoveredMoment: $hoveredMoment, hoveredReply: $hoveredReply
             )
         }
@@ -66,6 +66,7 @@ extension ModelSpeed {
 /// 这一秒要画的内容
 private struct SpeedContent: View {
     let store: UsageStore
+    let prefs: Preferences
     let now: Double
     let detailed: Bool
     @Binding var hoveredMoment: Double?
@@ -76,20 +77,51 @@ private struct SpeedContent: View {
         let models = log.models(now: now)
         let model = store.speedModel(in: models)
         let requests = model?.requests ?? []
-        // Claude Code 太旧，回复里没有请求发出的时刻
-        let untimed = model == nil && (log.lastUntimed ?? 0) > now - OutputSpeed.span
+        let pending = model?.pending ?? []
+        let recent = OutputSpeed.rate(requests, from: now - OutputSpeed.recent, to: now)
+        // 最近 1 小时哪个模型都没有写完的回复：不画空图表，只说明一句
+        let replied = models.contains { ($0.requests.last?.end ?? 0) > now - OutputSpeed.span }
+
+        CollapsibleSection(.speed, title: L10n.t("输出速度", "Output speed"), prefs: prefs, spacing: 10) {
+            SpeedStatus(pending: pending, now: now)
+        } summary: {
+            SpeedSummary(rate: recent, generating: !pending.isEmpty, replied: replied)
+        } content: {
+            if replied {
+                SpeedFigures(
+                    store: store, models: models, model: model, now: now, detailed: detailed,
+                    hoveredMoment: $hoveredMoment, hoveredReply: $hoveredReply
+                )
+            } else {
+                // Claude Code 太旧，回复里没有请求发出的时刻
+                let untimed = (log.lastUntimed ?? 0) > now - OutputSpeed.span
+                SpeedEmpty(untimed: untimed, generating: !pending.isEmpty)
+            }
+        }
+    }
+}
+
+/// 最近 1 小时有回复时：左边大数字和模型，右边折线（详细时是统计），详细时下面再画每一次回复
+private struct SpeedFigures: View {
+    let store: UsageStore
+    let models: [ModelSpeed]
+    let model: ModelSpeed?
+    let now: Double
+    let detailed: Bool
+    @Binding var hoveredMoment: Double?
+    @Binding var hoveredReply: UInt64?
+
+    var body: some View {
+        let requests = model?.requests ?? []
         let recent = OutputSpeed.rate(requests, from: now - OutputSpeed.recent, to: now)
         let hour = OutputSpeed.rate(requests, from: now - OutputSpeed.span, to: now)
 
         VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(title: L10n.t("输出速度", "Output speed")) {
-                SpeedStatus(pending: model?.pending ?? [], now: now)
-            }
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     SpeedHeadline(rate: recent)
                     ZStack(alignment: .leading) {
-                        ModelSwitch(store: store, models: models, current: model, untimed: untimed)
+                        ModelSwitch(store: store, models: models, current: model)
                             .opacity(hoveredMoment == nil ? 1 : 0)
                         if let t = hoveredMoment, !detailed {
                             Text(SpeedSection.moment(t, requests: requests))
@@ -119,6 +151,59 @@ private struct SpeedContent: View {
                         .frame(height: 64)
                     SpeedAxis(hovered: requests.first { $0.id == hoveredReply })
                 }
+            }
+        }
+    }
+}
+
+/// 最近 1 小时没有回复时的说明
+private struct SpeedEmpty: View {
+    let untimed: Bool
+    let generating: Bool
+
+    var body: some View {
+        if untimed {
+            EmptyNote(
+                icon: .clock,
+                title: L10n.t("更新 Claude Code 后才能计时", "Update Claude Code to time replies"),
+                detail: L10n.t("2.1.304 起会记下每个请求发出的时刻", "Version 2.1.304 and later record when each request is sent.")
+            )
+        } else if generating {
+            EmptyNote(icon: .pulse, title: L10n.t("回复写完后显示速度", "The speed appears once the reply is written"))
+        } else {
+            EmptyNote(
+                icon: .pulse,
+                title: L10n.t("最近 1 小时没有回复", "No replies in the last hour"),
+                detail: L10n.t("Claude Code 写完回复后，这里显示每秒输出多少 token", "Once Claude Code writes a reply, its tokens per second show here.")
+            )
+        }
+    }
+}
+
+/// 收起后标题右侧：近 5 分钟的速度；正在生成时前面亮一个绿点
+private struct SpeedSummary: View {
+    let rate: OutputSpeed.Rate?
+    let generating: Bool
+    let replied: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if generating {
+                Circle()
+                    .fill(Palette.live)
+                    .frame(width: 5, height: 5)
+            }
+            if let rate {
+                let number = Text(SpeedSection.whole(rate.tokensPerSecond))
+                    .fontWeight(.medium)
+                    .foregroundStyle(Palette.secondary)
+                Text("\(number) tok/s")
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: rate.tokensPerSecond.rounded()))
+            } else if generating {
+                Text(L10n.t("生成中", "Generating"))
+            } else {
+                Text(replied ? L10n.t("近 5 分钟没有回复", "No replies in 5 min") : L10n.t("最近 1 小时没有回复", "No replies in the last hour"))
             }
         }
     }
@@ -185,14 +270,13 @@ private struct ModelSwitch: View {
     let store: UsageStore
     let models: [ModelSpeed]
     let current: ModelSpeed?
-    let untimed: Bool
 
     @State private var hovering = false
 
     var body: some View {
         let switchable = models.count > 1
         HStack(spacing: 4) {
-            Text(label)
+            Text(current.map { L10n.t("近 5 分钟 · \($0.title)", "Last 5 min · \($0.title)") } ?? L10n.t("近 5 分钟", "Last 5 min"))
             if switchable {
                 SVGIcon(.chevronDown, size: 8, lineWidth: 2.4)
             }
@@ -207,12 +291,6 @@ private struct ModelSwitch: View {
             withAnimation(.smooth(duration: 0.4)) { store.speedChoice = models[(index + 1) % models.count].id }
         }
         .help(switchable ? L10n.t("最近 1 小时用了 \(models.count) 个模型，点击切换", "\(models.count) models in the last hour. Click to switch.") : "")
-    }
-
-    private var label: String {
-        if let current { return L10n.t("近 5 分钟 · \(current.title)", "Last 5 min · \(current.title)") }
-        if untimed { return L10n.t("更新 Claude Code 后才能计时", "Update Claude Code to time replies") }
-        return L10n.t("最近 1 小时没有回复", "No replies in the last hour")
     }
 }
 

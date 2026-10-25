@@ -2,13 +2,14 @@ import SwiftUI
 import UsageCore
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case usage, display, data, general
+    case usage, menuBar, panel, data, general
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .usage: L10n.tNow("用量", "Usage")
-        case .display: L10n.tNow("显示", "Display")
+        case .menuBar: L10n.tNow("菜单栏", "Menu Bar")
+        case .panel: L10n.tNow("面板", "Panel")
         case .data: L10n.tNow("数据", "Data")
         case .general: L10n.tNow("通用", "General")
         }
@@ -17,7 +18,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: Icon {
         switch self {
         case .usage: .gauge
-        case .display: .menuBar
+        case .menuBar: .menuBar
+        case .panel: .panel
         case .data: .database
         case .general: .sliders
         }
@@ -60,7 +62,8 @@ struct SettingsView: View {
                 Group {
                     switch tab {
                     case .usage: UsagePage(prefs: prefs, store: store)
-                    case .display: DisplayPage(prefs: prefs, store: store)
+                    case .menuBar: MenuBarPage(prefs: prefs, store: store)
+                    case .panel: PanelPage(prefs: prefs, store: store)
                     case .data: DataPage(prefs: prefs, store: store)
                     case .general: GeneralPage(prefs: prefs, store: store)
                     }
@@ -274,18 +277,12 @@ private struct UsagePage: View {
     }
 }
 
-// MARK: - 显示
+// MARK: - 菜单栏
 
-private struct DisplayPage: View {
+private struct MenuBarPage: View {
     @Bindable var prefs: Preferences
     let store: UsageStore
 
-    /// 时间格式选项里的示例：用实际的每周重置时间，还没有时用下一个周六 22:00
-    private var sampleReset: Date {
-        if let reset = store.official.usage?.weeklyReset() { return reset }
-        let cal = Calendar.autoupdatingCurrent
-        return cal.nextDate(after: Date(), matching: DateComponents(hour: 22, minute: 0, weekday: 7), matchingPolicy: .nextTime) ?? Date()
-    }
     /// 指针停在哪个数值方块上：上方的预览据此突出这一列，或预览加入它之后的样子
     @State private var hoveredItem: MenuBarItem?
 
@@ -327,37 +324,6 @@ private struct DisplayPage: View {
                 SwitchToggle(isOn: $prefs.showExitSafety)
             }
 
-            SettingsHeader(title: L10n.t("重置时间", "Reset times"))
-            SettingsRow(
-                title: L10n.t("时间格式", "Format"),
-                detail: L10n.t("面板里各额度的重置时间，按系统当前时区（\(LimitsSection.zoneName)）", "When each limit resets, in the system time zone (\(LimitsSection.zoneName))")
-            ) {
-                PillSegmented(options: ResetTimeStyle.allCases.map { ($0, LimitsSection.resetMoment(sampleReset, style: $0)) }, selection: $prefs.resetTimeStyle)
-            }
-            Hairline()
-            SettingsRow(
-                title: L10n.t("显示倒计时", "Countdown"),
-                detail: L10n.t("在重置时间右侧显示还剩多久，精确到秒，每秒刷新", "Shows the time left beside each reset, to the second, updated every second")
-            ) {
-                SwitchToggle(isOn: $prefs.showsResetCountdown)
-            }
-
-            SettingsHeader(title: L10n.t("输出速度", "Output speed"))
-            SettingsRow(
-                title: L10n.t("面板显示", "In the panel"),
-                detail: L10n.t("简洁：近 5 分钟的速度和最近 1 小时的折线。每次回复：再画出每一次回复的速度。", "Simple shows the last 5 minutes and a one-hour line. Every reply also plots each reply.")
-            ) {
-                PillSegmented(options: SpeedDisplay.allCases.map { ($0, $0.title) }, selection: $prefs.speedDisplay)
-            }
-
-            SettingsHeader(title: L10n.t("货币", "Currency"))
-            SettingsRow(title: L10n.t("显示货币", "Display currency"), detail: L10n.t("按最新美元牌价自动折算，面板金额一起变", "Converted from USD at the latest rate. Panel amounts follow.")) {
-                DropdownButton(
-                    options: MoneyFormat.Unit.allCases.map { ($0, L10n.currency($0)) },
-                    selection: $prefs.currency
-                )
-            }
-
             SettingsHeader(title: L10n.t("提醒", "Alerts"))
             SettingsRow(title: L10n.t("用量预警通知", "Usage alerts"), detail: L10n.t("超过预警线、以及达到 95% 时各提醒一次", "Once past your line, and again at 95%.")) {
                 SwitchToggle(isOn: $prefs.notificationsEnabled)
@@ -373,6 +339,105 @@ private struct DisplayPage: View {
                         .frame(width: 34, alignment: .trailing)
                 }
             }
+        }
+    }
+}
+
+// MARK: - 面板
+
+/// 面板里显示什么、显示得多详细。改了立刻生效：偏好设置一变，面板就按新的样子排
+private struct PanelPage: View {
+    @Bindable var prefs: Preferences
+    let store: UsageStore
+
+    /// 时间格式选项里的示例：用实际的每周重置时间，还没有时用下一个周六 22:00
+    private var sampleReset: Date {
+        if let reset = store.official.usage?.weeklyReset() { return reset }
+        let cal = Calendar.autoupdatingCurrent
+        return cal.nextDate(after: Date(), matching: DateComponents(hour: 22, minute: 0, weekday: 7), matchingPolicy: .nextTime) ?? Date()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsHeader(title: L10n.t("内容", "Content"))
+            SettingsRow(title: L10n.t("出口", "Exit"), detail: exitDetail) {
+                PillSegmented(options: ExitDisplay.allCases.map { ($0, $0.title) }, selection: $prefs.exitDisplay)
+            }
+            Hairline()
+            SettingsRow(
+                title: L10n.t("进程", "Processes"),
+                detail: L10n.t("正在运行的 Claude 会话，展开后可以强制退出", "Running Claude sessions. Expand the list to force quit one.")
+            ) {
+                SwitchToggle(isOn: $prefs.showsProcesses)
+            }
+            Hairline()
+            sectionRow(.limits, title: L10n.t("用量限额", "Limits"), selection: $prefs.limitsDisplay)
+            Hairline()
+            sectionRow(.speed, title: L10n.t("输出速度", "Output speed"), selection: $prefs.speedDisplay)
+            Hairline()
+            sectionRow(.spend, title: L10n.t("本期消耗", "Spend"), selection: $prefs.spendDisplay)
+            Text(L10n.t(
+                "在面板里点区块的标题可以收起或展开，收起后标题右侧显示摘要。",
+                "In the panel, click a section's title to collapse or expand it. A collapsed section shows a summary beside its title."
+            ))
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 12)
+
+            // 只有详细的限额写重置时间
+            if prefs.limitsDisplay == .detailed {
+                SettingsHeader(title: L10n.t("重置时间", "Reset times"))
+                SettingsRow(
+                    title: L10n.t("时间格式", "Format"),
+                    detail: L10n.t("面板里各额度的重置时间，按系统当前时区（\(LimitsSection.zoneName)）", "When each limit resets, in the system time zone (\(LimitsSection.zoneName))")
+                ) {
+                    PillSegmented(options: ResetTimeStyle.allCases.map { ($0, LimitsSection.resetMoment(sampleReset, style: $0)) }, selection: $prefs.resetTimeStyle)
+                }
+                Hairline()
+                SettingsRow(
+                    title: L10n.t("显示倒计时", "Countdown"),
+                    detail: L10n.t("在重置时间右侧显示还剩多久，精确到秒，每秒刷新", "Shows the time left beside each reset, to the second, updated every second")
+                ) {
+                    SwitchToggle(isOn: $prefs.showsResetCountdown)
+                }
+            }
+
+            SettingsHeader(title: L10n.t("货币", "Currency"))
+            SettingsRow(title: L10n.t("显示货币", "Display currency"), detail: L10n.t("按最新美元牌价自动折算，面板和菜单栏上的金额一起变", "Converted from USD at the latest rate. Amounts in the panel and the menu bar follow.")) {
+                DropdownButton(
+                    options: MoneyFormat.Unit.allCases.map { ($0, L10n.currency($0)) },
+                    selection: $prefs.currency
+                )
+            }
+        }
+    }
+
+    private func sectionRow(_ section: PanelSection, title: String, selection: Binding<PanelDetail>) -> some View {
+        SettingsRow(title: title, detail: Self.detail(section, selection.wrappedValue)) {
+            PillSegmented(options: PanelDetail.allCases.map { ($0, $0.title) }, selection: selection)
+        }
+    }
+
+    private var exitDetail: String {
+        switch prefs.exitDisplay {
+        case .always: L10n.t("出口所在的国家或地区和 IP，指针停上去显示完整地址", "The exit's country or region and IP. Point at it for the full address.")
+        case .issues: L10n.t("只在官方请求暂停、出口无法确认或 IPv6 直连时出现", "Only when official requests are paused, the exit is unknown, or IPv6 connects directly.")
+        }
+    }
+
+    /// 每个选项下这一块是什么样子
+    private static func detail(_ section: PanelSection, _ detail: PanelDetail) -> String {
+        switch (section, detail) {
+        case (.limits, .detailed): L10n.t("每项一条进度条和安全线，下面写重置时间", "A bar with its safe line for each limit, and when it resets.")
+        case (.limits, .compact): L10n.t("每项一行：名字、进度条和百分比。重置时间在悬停说明里", "One line per limit: name, bar, and percentage. Reset times are in the tooltip.")
+        case (.limits, .hidden): L10n.t("面板里不显示，菜单栏和预警通知照常", "Not in the panel. The menu bar and alerts still use it.")
+        case (.speed, .detailed): L10n.t("近 5 分钟的速度，下面画出最近 1 小时的每一次回复", "The last 5 minutes, with every reply in the last hour plotted below.")
+        case (.speed, .compact): L10n.t("近 5 分钟的速度和最近 1 小时的折线", "The last 5 minutes and a line of the last hour.")
+        case (.speed, .hidden): L10n.t("面板里不显示，菜单栏上仍然可以选速度", "Not in the panel. Speed can still be a menu bar value.")
+        case (.spend, .detailed): L10n.t("金额、预计、Token 构成、缓存命中率和各模型花费", "Amount, estimate, tokens, cache hit rate, and cost by model.")
+        case (.spend, .compact): L10n.t("只留金额、预计和最近 14 天的柱状图", "Just the amount, the estimate, and the last 14 days.")
+        case (.spend, .hidden): L10n.t("面板里不显示，菜单栏上仍然可以选费用", "Not in the panel. Costs can still be menu bar values.")
         }
     }
 }

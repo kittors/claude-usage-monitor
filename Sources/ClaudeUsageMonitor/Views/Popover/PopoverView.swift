@@ -25,12 +25,14 @@ struct PopoverView: View {
 
     var body: some View {
         let visible = presentation.isVisible
+        let processes = prefs.showsProcesses
         VStack(alignment: .leading, spacing: 0) {
             Header(store: store, prefs: prefs)
                 .padding(.bottom, 10)
-            NetworkPlaceRow()
-                .padding(.bottom, 8)
-            ClaudeProcessSection()
+            NetworkPlaceRow(display: prefs.exitDisplay)
+            if processes {
+                ClaudeProcessSection()
+            }
             // 进程列表展开、收起时，下面这整块作为一个整体移动。不分组的话，位移会下推到每个叶子视图各自做动画，
             // 正在滚动的数字按自己那份动画走，和周围的内容错开，看起来就是跳动。
             VStack(alignment: .leading, spacing: 0) {
@@ -48,9 +50,10 @@ struct PopoverView: View {
         // 万一某一行比面板宽，也只是往右溢出，不会把整块内容往左挤
         .frame(width: Metrics.popoverWidth, alignment: .leading)
         .background(PanelBackground())
-        // 进程出现、退出，IPv6 警告、更新提示出现时，面板高度随内容一起过渡
+        // 进程出现、退出，出口出了问题，IPv6 警告、更新提示出现时，面板高度随内容一起过渡
         .animation(.disclosure, value: ClaudeProcesses.shared.tasks.map(\.pid))
         .animation(.disclosure, value: NetworkPlace.shared.ipv6IsDirect)
+        .animation(.disclosure, value: NetworkPlaceRow.hasIssue(NetworkPlace.shared))
         .opacity(visible ? 1 : 0)
         .animation(.easeOut(duration: 0.12), value: visible)
         .padding(Metrics.shadowInset)
@@ -58,8 +61,8 @@ struct PopoverView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.panelVisible, visible)
         .environment(\.colorScheme, .dark)
-        .task(id: visible) {
-            guard visible else { return }
+        .task(id: visible && processes) {
+            guard visible, processes else { return }
             while !Task.isCancelled {
                 ClaudeProcesses.shared.refresh()
                 try? await Task.sleep(for: .seconds(2))
@@ -67,28 +70,75 @@ struct PopoverView: View {
         }
     }
 
-    @ViewBuilder
-    private var content: some View {
+    /// 面板中间的几块，按设置里的选择排列，相邻两块之间一条发丝线
+    private enum Block: Hashable {
+        case limits, speed, spend
+        /// 第一次建立本地索引：速度和花费要等它
+        case indexing
+        /// 没有找到会话记录
+        case noSessions
+        /// 设置里把三块都关掉了
+        case allHidden
+    }
+
+    /// 限额只来自官方接口，不用等本地索引；速度和花费来自本地索引
+    private var blocks: [Block] {
+        let limits = prefs.limitsDisplay != .hidden
+        let speed = prefs.speedDisplay != .hidden
+        let spend = prefs.spendDisplay != .hidden
+        guard limits || speed || spend else { return [.allHidden] }
+        var blocks: [Block] = limits ? [.limits] : []
         switch store.phase {
         case .ready:
+            if store.snapshot != nil {
+                if speed { blocks.append(.speed) }
+                if spend { blocks.append(.spend) }
+            }
+        case .launching, .indexing:
+            if speed || spend { blocks.append(.indexing) }
+        case .empty:
+            if speed || spend { blocks.append(.noSessions) }
+        }
+        return blocks
+    }
+
+    private var content: some View {
+        let blocks = blocks
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(blocks.enumerated()), id: \.element) { index, block in
+                if index > 0 { Hairline() }
+                view(for: block)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func view(for block: Block) -> some View {
+        switch block {
+        case .limits:
+            LimitsSection(store: store, prefs: prefs)
+                .padding(.vertical, 14)
+        case .speed:
+            SpeedSection(store: store, prefs: prefs)
+                .padding(.vertical, 14)
+        case .spend:
             if let snapshot = store.snapshot {
-                LimitsSection(store: store, prefs: prefs)
-                    .padding(.vertical, 14)
-                Hairline()
-                if prefs.speedDisplay != .hidden {
-                    SpeedSection(store: store, prefs: prefs)
-                        .padding(.vertical, 14)
-                    Hairline()
-                }
                 CycleSection(snapshot: snapshot, prefs: prefs)
                     .padding(.vertical, 14)
             }
-        case .launching, .indexing:
+        case .indexing:
             LoadingSection(phase: store.phase)
                 .padding(.vertical, 28)
-        case .empty:
+        case .noSessions:
             EmptySection(prefs: prefs, choose: actions.chooseDataDirectory)
                 .padding(.vertical, 28)
+        case .allHidden:
+            EmptyNote(
+                icon: .sliders,
+                title: L10n.t("面板里的内容都已隐藏", "Everything in the panel is hidden"),
+                detail: L10n.t("可以在「设置 › 面板」中选择要显示的内容", "Choose what to show in Settings > Panel.")
+            )
+            .padding(.vertical, 16)
         }
     }
 }
@@ -96,21 +146,32 @@ struct PopoverView: View {
 // MARK: - 网络位置
 
 private struct NetworkPlaceRow: View {
+    /// 设置里选「异常时」时，平时不显示这一行
+    let display: ExitDisplay
     @State private var hoveringIP = false
 
     var body: some View {
         let network = NetworkPlace.shared
-        VStack(alignment: .leading, spacing: 2) {
-            exitLine(network)
-            if network.ipv6IsDirect {
-                Text(L10n.t("严重警告：IPv6 直连中国大陆、香港或澳门", "Severe warning: IPv6 connects directly from mainland China, Hong Kong, or Macau"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Palette.critical)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 28)
+        if display == .always || Self.hasIssue(network) {
+            VStack(alignment: .leading, spacing: 2) {
+                exitLine(network)
+                if network.ipv6IsDirect {
+                    Text(L10n.t("严重警告：IPv6 直连中国大陆、香港或澳门", "Severe warning: IPv6 connects directly from mainland China, Hong Kong, or Macau"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.critical)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 28)
+                }
             }
+            .padding(.bottom, 8)
+            .transition(.opacity)
         }
+    }
+
+    /// 官方请求暂停（出口在中国大陆、香港、澳门，或无法确认），或者 IPv6 直连。选了「异常时」也要显示
+    static func hasIssue(_ network: NetworkPlace) -> Bool {
+        network.ipv6IsDirect || network.failed || network.place?.restrictsUsage == true
     }
 
     /// 确认中显示骨架，结果出来后在原地淡入。两者行高、各元素的位置都相同，切换时这一行不会跳动。
@@ -253,24 +314,12 @@ private struct ClaudeProcessSection: View {
         let list = ClaudeProcesses.shared
         if !list.tasks.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                Button(action: toggle) {
-                    HStack(spacing: 6) {
-                        SVGIcon(.chevronDown, size: 9, lineWidth: 2.2)
-                            .foregroundStyle(Palette.tertiary)
-                            .rotationEffect(.degrees(expanded ? 0 : -90))
-                        Text(L10n.t("进程", "Processes"))
-                            .font(.sectionTitle)
-                            .foregroundStyle(Palette.secondary)
-                        Spacer(minLength: 8)
-                        Text(L10n.t("\(list.tasks.count) 个", "\(list.tasks.count)"))
-                            .font(.caption)
-                            .foregroundStyle(Palette.tertiary)
-                            .monospacedDigit()
-                            .contentTransition(.identity)
-                    }
-                    .contentShape(Rectangle())
+                // 和下面几块的标题同一个样子
+                SectionHeader(title: L10n.t("进程", "Processes"), collapsed: !expanded, toggle: toggle) {
+                    Text(L10n.t("\(list.tasks.count) 个", "\(list.tasks.count)"))
+                        .monospacedDigit()
+                        .contentTransition(.identity)
                 }
-                .buttonStyle(StillButtonStyle())
 
                 // 高度从 0 到全部行：行随高度逐渐露出，下方内容与面板背景在同一个动画里移动
                 VStack(alignment: .leading, spacing: 0) {

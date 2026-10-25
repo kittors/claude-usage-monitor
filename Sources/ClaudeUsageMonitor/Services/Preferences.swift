@@ -147,22 +147,40 @@ enum ResetTimeStyle: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
-/// 面板里输出速度怎么显示
-enum SpeedDisplay: String, CaseIterable, Identifiable, Codable {
-    /// 近 5 分钟的速度和最近 1 小时的折线
-    case compact
-    /// 再画出每一次回复的速度
+/// 面板里一个区块显示得多详细。原始值沿用 1.6 输出速度的选项，旧的设置直接读得出来
+enum PanelDetail: String, CaseIterable, Identifiable, Codable {
     case detailed
+    case compact
     case hidden
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .detailed: L10n.tNow("详细", "Detailed")
         case .compact: L10n.tNow("简洁", "Simple")
-        case .detailed: L10n.tNow("每次回复", "Every reply")
         case .hidden: L10n.tNow("不显示", "Hidden")
         }
     }
+}
+
+/// 面板顶部出口那一行什么时候显示
+enum ExitDisplay: String, CaseIterable, Identifiable, Codable {
+    case always
+    /// 只在出口暂停、无法确认或 IPv6 直连时显示
+    case issues
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .always: L10n.tNow("始终", "Always")
+        case .issues: L10n.tNow("异常时", "On issues")
+        }
+    }
+}
+
+/// 面板里可以收起的区块
+enum PanelSection {
+    case limits, speed, spend
 }
 
 /// 本期消耗的统计范围。Claude 的额度按周重置，默认是本周。
@@ -175,6 +193,15 @@ enum CostSpan: String, CaseIterable, Identifiable, Codable {
         case .month: L10n.tNow("本月周期", "This month")
         case .week: L10n.tNow("本周期", "This week")
         case .day: L10n.tNow("每日", "Today")
+        }
+    }
+
+    /// 本期消耗收起后，摘要里的短名字
+    var shortTitle: String {
+        switch self {
+        case .month: L10n.tNow("本月", "Month")
+        case .week: L10n.tNow("本周", "Week")
+        case .day: L10n.tNow("今日", "Today")
         }
     }
 }
@@ -267,8 +294,20 @@ final class Preferences {
     var resetTimeStyle: ResetTimeStyle { didSet { save(resetTimeStyle.rawValue, "resetTimeStyle") } }
     /// 重置时间旁显示倒计时，精确到秒、每秒刷新。默认关闭。
     var showsResetCountdown: Bool { didSet { save(showsResetCountdown, "showsResetCountdown") } }
-    /// 面板里的输出速度。默认简洁，每次回复的点图要在设置里打开
-    var speedDisplay: SpeedDisplay { didSet { save(speedDisplay.rawValue, "speedDisplay") } }
+    /// 面板里的用量限额。默认详细
+    var limitsDisplay: PanelDetail { didSet { save(limitsDisplay.rawValue, "limitsDisplay") } }
+    /// 面板里的输出速度。默认简洁，详细（画出每一次回复）要在设置里打开
+    var speedDisplay: PanelDetail { didSet { save(speedDisplay.rawValue, "speedDisplay") } }
+    /// 面板里的本期消耗。默认详细
+    var spendDisplay: PanelDetail { didSet { save(spendDisplay.rawValue, "spendDisplay") } }
+    /// 面板顶部的出口一行。默认一直显示；出了问题时总会显示
+    var exitDisplay: ExitDisplay { didSet { save(exitDisplay.rawValue, "exitDisplay") } }
+    /// 面板里的进程一行。默认显示
+    var showsProcesses: Bool { didSet { save(showsProcesses, "showsProcesses") } }
+    /// 在面板里收起的区块。每个区块一项：收起一个时，别的区块不用跟着重新计算
+    var limitsCollapsed: Bool { didSet { save(limitsCollapsed, "limitsCollapsed") } }
+    var speedCollapsed: Bool { didSet { save(speedCollapsed, "speedCollapsed") } }
+    var spendCollapsed: Bool { didSet { save(spendCollapsed, "spendCollapsed") } }
     /// 最近一次能算准每周额度的同步（官方本周百分比至少 10%）。之后某一周百分比还小时，预计先借用它
     var allowanceBasis: AllowanceBasis? {
         didSet { save(allowanceBasis.flatMap { try? JSONEncoder().encode($0) }, "allowanceBasis") }
@@ -324,7 +363,14 @@ final class Preferences {
         refreshOnOpen = d.object(forKey: "refreshOnOpen") as? Bool ?? true
         resetTimeStyle = ResetTimeStyle(rawValue: d.string(forKey: "resetTimeStyle") ?? "") ?? .weekday
         showsResetCountdown = d.object(forKey: "showsResetCountdown") as? Bool ?? false
-        speedDisplay = SpeedDisplay(rawValue: d.string(forKey: "speedDisplay") ?? "") ?? .compact
+        limitsDisplay = PanelDetail(rawValue: d.string(forKey: "limitsDisplay") ?? "") ?? .detailed
+        speedDisplay = PanelDetail(rawValue: d.string(forKey: "speedDisplay") ?? "") ?? .compact
+        spendDisplay = PanelDetail(rawValue: d.string(forKey: "spendDisplay") ?? "") ?? .detailed
+        exitDisplay = ExitDisplay(rawValue: d.string(forKey: "exitDisplay") ?? "") ?? .always
+        showsProcesses = d.object(forKey: "showsProcesses") as? Bool ?? true
+        limitsCollapsed = d.bool(forKey: "limitsCollapsed")
+        speedCollapsed = d.bool(forKey: "speedCollapsed")
+        spendCollapsed = d.bool(forKey: "spendCollapsed")
         allowanceBasis = d.data(forKey: "allowanceBasis").flatMap { try? JSONDecoder().decode(AllowanceBasis.self, from: $0) }
     }
 
@@ -333,6 +379,23 @@ final class Preferences {
     }
 
     // MARK: 派生值
+
+    /// 只读这一个区块的那一项，别的区块收起、展开时不会牵连到这里
+    func isCollapsed(_ section: PanelSection) -> Bool {
+        switch section {
+        case .limits: limitsCollapsed
+        case .speed: speedCollapsed
+        case .spend: spendCollapsed
+        }
+    }
+
+    func setCollapsed(_ section: PanelSection, _ collapsed: Bool) {
+        switch section {
+        case .limits: limitsCollapsed = collapsed
+        case .speed: speedCollapsed = collapsed
+        case .spend: spendCollapsed = collapsed
+        }
+    }
 
     var usageSettings: UsageSettings {
         UsageSettings(

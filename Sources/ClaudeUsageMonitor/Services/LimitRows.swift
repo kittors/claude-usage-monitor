@@ -17,6 +17,8 @@ struct LimitRow: Identifiable, Equatable {
 
     let id: String
     let title: String
+    /// 简洁显示和收起后的摘要里用的短名字：5 小时、本周、Fable
+    let shortTitle: String
     /// 与官方显示一致的整数百分比
     let percent: Int
     let reset: Reset
@@ -82,30 +84,32 @@ extension UsageStore {
 
         // 5 小时：没有进行中的窗口时官方返回 0% 且没有重置时间
         let five = usage.fiveHour ?? OfficialLimit(utilization: 0, resetsAt: nil)
+        let fiveTitle = L10n.tNow("5 小时", "5-hour")
         if let reset = five.resetsAt {
             rows.append(reset > now
-                ? LimitRow(id: "five", title: L10n.tNow("5 小时", "5-hour"), percent: five.percent, reset: .countdown(reset), resetsAt: reset)
-                : LimitRow(id: "five", title: L10n.tNow("5 小时", "5-hour"), percent: 0, reset: .elapsed, resetsAt: reset))
+                ? LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: five.percent, reset: .countdown(reset), resetsAt: reset)
+                : LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: 0, reset: .elapsed, resetsAt: reset))
         } else {
-            rows.append(LimitRow(id: "five", title: L10n.tNow("5 小时", "5-hour"), percent: five.percent, reset: .idle))
+            rows.append(LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: five.percent, reset: .idle))
         }
 
         if let week = usage.sevenDay {
-            rows.append(weekly(id: "week", title: L10n.tNow("本周 · 全部模型", "Week · all models"), week, now: now))
+            rows.append(weekly(id: "week", title: L10n.tNow("本周 · 全部模型", "Week · all models"), short: L10n.tNow("本周", "Week"), week, now: now))
         }
         for scoped in usage.scoped {
-            rows.append(weekly(id: "scoped-\(scoped.modelName)", title: L10n.tNow("本周 · \(scoped.modelName)", "Week · \(scoped.modelName)"), scoped.limit, now: now))
+            let name = scoped.modelName
+            rows.append(weekly(id: "scoped-\(name)", title: L10n.tNow("本周 · \(name)", "Week · \(name)"), short: name, scoped.limit, now: now))
         }
         for (name, limit) in [("Sonnet", usage.sevenDaySonnet), ("Opus", usage.sevenDayOpus)] {
             guard let limit, limit.percent > 0, !usage.scoped.contains(where: { $0.modelName.hasPrefix(name) }) else { continue }
-            rows.append(weekly(id: "family-\(name)", title: L10n.tNow("本周 · \(name)", "Week · \(name)"), limit, now: now))
+            rows.append(weekly(id: "family-\(name)", title: L10n.tNow("本周 · \(name)", "Week · \(name)"), short: name, limit, now: now))
         }
         return rows
     }
 
-    private static func weekly(id: String, title: String, _ limit: OfficialLimit, now: Date) -> LimitRow {
-        guard let reset = limit.resetsAt else { return LimitRow(id: id, title: title, percent: limit.percent, reset: .none) }
-        if reset <= now { return LimitRow(id: id, title: title, percent: 0, reset: .elapsed, resetsAt: reset) }
-        return LimitRow(id: id, title: title, percent: limit.percent, reset: .weekday(reset), resetsAt: reset)
+    private static func weekly(id: String, title: String, short: String, _ limit: OfficialLimit, now: Date) -> LimitRow {
+        guard let reset = limit.resetsAt else { return LimitRow(id: id, title: title, shortTitle: short, percent: limit.percent, reset: .none) }
+        if reset <= now { return LimitRow(id: id, title: title, shortTitle: short, percent: 0, reset: .elapsed, resetsAt: reset) }
+        return LimitRow(id: id, title: title, shortTitle: short, percent: limit.percent, reset: .weekday(reset), resetsAt: reset)
     }
 }

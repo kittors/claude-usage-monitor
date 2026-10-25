@@ -9,7 +9,7 @@ enum Icon: String, CaseIterable {
     case crown, star, users, diamond, coin, bell, rocket, info
     case chevronDown, chevronLeft, chevronRight, check, close, plus, minus
     case cpu, flame, sparkles, terminal, branch, warning, clock, globe
-    case pulse, menuBar, crosshair, database, external, wand, trendUp
+    case pulse, menuBar, panel, crosshair, database, external, wand, trendUp
     case message, hexagon, upgrade
 
     var markup: String {
@@ -200,6 +200,12 @@ enum Icon: String, CaseIterable {
             <path d="M3 8.6h18"/>
             <circle cx="16.2" cy="6.5" r=".9" fill="currentColor" stroke="none"/>
             <circle cx="18.4" cy="6.5" r=".9" fill="currentColor" stroke="none"/>
+            """
+        case .panel: body = """
+            <path d="M3.4 4.2h17.2" stroke-opacity=".5"/>
+            <rect x="5.6" y="7.2" width="12.8" height="13.4" rx="3" fill="currentColor" fill-opacity=".1"/>
+            <path d="M8.8 11.4h6.4"/>
+            <path d="M8.8 15h4" stroke-opacity=".5"/>
             """
         case .crosshair: body = """
             <circle cx="12" cy="12" r="6.8" fill="currentColor" fill-opacity=".1"/>

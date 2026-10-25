@@ -11,37 +11,18 @@ struct LimitsSection: View {
     var body: some View {
         let rows = store.limitRows
         let official = store.official
-        VStack(alignment: .leading, spacing: 13) {
-            SectionTitle(title: L10n.t("用量限额", "Limits")) {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    let status = statusText(official, now: context.date)
-                    Text(status)
-                        .contentTransition(.opacity)
-                        .animation(.easeOut(duration: 0.25), value: status)
-                }
-                .help(statusHelp(official))
+        CollapsibleSection(.limits, title: L10n.t("用量限额", "Limits"), prefs: prefs, spacing: 13) {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                let status = statusText(official, now: context.date)
+                Text(status)
+                    .contentTransition(.opacity)
+                    .animation(.easeOut(duration: 0.25), value: status)
             }
-            if rows.isEmpty {
-                ForEach([L10n.t("5 小时", "5-hour"), L10n.t("本周 · 全部模型", "Week · all models")], id: \.self) { title in
-                    PlaceholderRow(title: title)
-                }
-            } else {
-                ForEach(rows) { row in
-                    LimitRowView(row: row, style: prefs.resetTimeStyle, countdown: prefs.showsResetCountdown)
-                }
-            }
-            if rows.isEmpty || official.state.awaitingLogin {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(Self.unavailableReason(official.state, fetching: official.isFetching))
-                        .font(.caption)
-                        .foregroundStyle(Palette.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if official.state.awaitingLogin {
-                        FooterButton(icon: .terminal, title: L10n.t("在终端中登录 Claude Code", "Sign in with Claude Code in Terminal")) { store.signInToClaudeCode() }
-                            .padding(.leading, -8)
-                    }
-                }
-            }
+            .help(statusHelp(official))
+        } summary: {
+            LimitsSummary(rows: rows, fallback: statusText(official, now: Date()))
+        } content: {
+            LimitsContent(store: store, prefs: prefs, rows: rows)
         }
     }
 
@@ -100,6 +81,137 @@ struct LimitsSection: View {
         case .failed(let message): L10n.t("暂时无法获取官方用量（\(message)），稍后自动重试。", "Official usage is unavailable (\(message)). Retrying shortly.")
         }
     }
+
+    /// 面板里的说明：一个图标、一句话和一行补充
+    static func note(_ state: OfficialUsageService.State, fetching: Bool) -> (icon: Icon, title: String, detail: String?) {
+        switch state {
+        case .connected, .connecting:
+            if fetching { return (.gauge, L10n.t("正在获取官方用量…", "Fetching official usage…"), nil) }
+            return (.gauge, L10n.t("还没有官方数据", "No official numbers yet"),
+                    L10n.t("Claude Code 正在使用时会自动查询，也可以点「立即刷新」", "They are checked while Claude Code is in use, or tap Refresh."))
+        case .disabled:
+            return (.gauge, L10n.t("官方用量已关闭", "Official usage is off"),
+                    L10n.t("可以在「设置 › 用量」中开启", "Turn it on in Settings > Usage."))
+        case .noCredentials:
+            return (.terminal, L10n.t("没有找到 Claude Code 的登录", "No Claude Code login found"),
+                    L10n.t("登录后即可显示官方用量", "Sign in to show official usage."))
+        case .denied:
+            return (.warning, L10n.t("没有获得钥匙串授权", "Keychain access was denied"),
+                    L10n.t("在「设置 › 用量」中重新连接，并在系统弹窗中选择「始终允许」", "Reconnect in Settings > Usage and choose Always Allow."))
+        case .expired:
+            return (.clock, L10n.t("Claude Code 的登录已过期", "The Claude Code login has expired"),
+                    L10n.t("开启「设置 › 用量 › 自动续期登录」，或重新登录", "Turn on automatic renewal in Settings > Usage, or sign in again."))
+        case .signedOut:
+            return (.terminal, L10n.t("Claude Code 的登录已失效", "The Claude Code login is no longer valid"),
+                    L10n.t("登录到期或已退出，重新登录后自动恢复", "It expired or was signed out. Sign in again and this app recovers."))
+        case .failed(let message):
+            return (.warning, L10n.t("暂时无法获取官方用量", "Official usage is unavailable"),
+                    L10n.t("\(message)，稍后自动重试", "\(message). Retrying shortly."))
+        }
+    }
+}
+
+/// 展开时的内容。详细：每项三行，名字和百分比、进度条、重置时间；简洁：每项一行。没有官方数据时说明原因
+private struct LimitsContent: View {
+    let store: UsageStore
+    let prefs: Preferences
+    let rows: [LimitRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            if rows.isEmpty {
+                LimitsUnavailable(store: store)
+            } else {
+                if prefs.limitsDisplay == .compact {
+                    CompactLimits(rows: rows)
+                } else {
+                    ForEach(rows) { row in
+                        LimitRowView(row: row, style: prefs.resetTimeStyle, countdown: prefs.showsResetCountdown)
+                    }
+                }
+                // 登录失效时，上面是上次同步的数字
+                if store.official.state.awaitingLogin {
+                    LimitsUnavailable(store: store)
+                }
+            }
+        }
+    }
+}
+
+/// 没有官方数据或登录失效：说明原因，需要登录时带上在终端登录的按钮
+private struct LimitsUnavailable: View {
+    let store: UsageStore
+
+    var body: some View {
+        let official = store.official
+        let note = LimitsSection.note(official.state, fetching: official.isFetching)
+        EmptyNote(icon: note.icon, title: note.title, detail: note.detail) {
+            if official.state.awaitingLogin {
+                FooterButton(icon: .terminal, title: L10n.t("在终端中登录 Claude Code", "Sign in with Claude Code in Terminal")) { store.signInToClaudeCode() }
+                    .padding(.leading, -8)
+                    .padding(.top, 3)
+            }
+        }
+    }
+}
+
+/// 收起后标题右侧：每项的短名字和百分比，百分比和进度条同色。没有数据时写原因
+private struct LimitsSummary: View {
+    let rows: [LimitRow]
+    let fallback: String
+
+    var body: some View {
+        if rows.isEmpty {
+            Text(fallback)
+        } else {
+            HStack(spacing: 10) {
+                ForEach(rows) { row in
+                    HStack(spacing: 4) {
+                        Text(row.shortTitle)
+                        Text("\(row.percent)%")
+                            .fontWeight(.medium)
+                            .foregroundStyle(Palette.level(row.fraction))
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: row.fraction))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 简洁：每项一行，名字、进度条、百分比排成三列，进度条从同一处开始。重置时间和安全线写在悬停说明里
+private struct CompactLimits: View {
+    let rows: [LimitRow]
+
+    var body: some View {
+        // 安全线随时间前进：5 小时窗口里 1% 是 3 分钟，10 秒走一次就够
+        TimelineView(.periodic(from: .now, by: 10)) { context in
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 11) {
+                ForEach(rows) { row in
+                    let line = row.paceLine(now: context.date)
+                    let color = Palette.level(row.fraction)
+                    let tip = row.compactHelp(line)
+                    GridRow {
+                        Text(row.shortTitle)
+                            .font(.rowLabel)
+                            .foregroundStyle(Palette.text)
+                            .lineLimit(1)
+                            .help(tip)
+                        ThinBar(fraction: row.fraction, color: color, mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false)
+                            .help(tip)
+                        Text("\(row.percent)%")
+                            .font(.rowValue)
+                            .foregroundStyle(color)
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: row.fraction))
+                            .gridColumnAlignment(.trailing)
+                            .help(tip)
+                    }
+                }
+            }
+        }
+    }
 }
 
 private struct LimitRowView: View {
@@ -110,6 +222,8 @@ private struct LimitRowView: View {
     /// 刚刚上涨了多少，几秒后淡出
     @State private var rise: Int?
     @State private var riseCount = 0
+    /// 指针停在进度条上：下面那一行换成安全线是多少、还能用多少
+    @State private var pointing = false
 
     var body: some View {
         let color = Palette.level(row.fraction)
@@ -136,26 +250,14 @@ private struct LimitRowView: View {
                         .contentTransition(.numericText(value: row.fraction))
                 }
                 .contentShape(Rectangle())
-                .help(help(line))
+                .help(row.help(line))
                 ThinBar(
                     fraction: row.fraction, color: color,
-                    mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false, markLabel: markLabel(line)
+                    mark: line?.fraction, exceeded: line?.isExceeded(by: row.fraction) ?? false,
+                    onPoint: { inside in withAnimation(.quiet) { pointing = inside } }
                 )
                 if row.reset != .none {
-                    let caption = resetCaption(now: context.date)
-                    HStack(spacing: 8) {
-                        Text(caption.text)
-                        Spacer(minLength: 8)
-                        if let remaining = caption.remaining {
-                            Text(remaining)
-                                .foregroundStyle(Palette.secondary)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(Palette.tertiary)
-                    .monospacedDigit()
-                    .contentShape(Rectangle())
-                    .help(help(line))
+                    caption(now: context.date, line: line)
                 }
             }
         }
@@ -172,54 +274,38 @@ private struct LimitRowView: View {
         }
     }
 
-    /// 指针停在进度条上时，安全线上方的标签：安全线是多少，还能用多少或超了多少
-    private func markLabel(_ line: LimitPace.Line?) -> BarMarkLabel? {
-        guard let line else { return nil }
-        let value = L10n.t("安全线 \(Self.percent(line.fraction))", "Safe line \(Self.percent(line.fraction))")
-        if line.isExceeded(by: row.fraction) {
-            let over = Self.percent(row.fraction - line.fraction)
-            return BarMarkLabel(value: value, detail: L10n.t("超出 \(over)", "\(over) over"), alert: true)
+    /// 进度条下面一行：左边什么时候重置，右边（打开倒计时时）还剩多久。
+    /// 指针停在进度条上时，左边换成安全线的说明，写在这一行里而不是浮在进度条上方，不会盖住上一行的标题
+    private func caption(now: Date, line: LimitPace.Line?) -> some View {
+        let caption = resetCaption(now: now)
+        let note = pointing ? row.safeLineNote(line) : nil
+        return HStack(spacing: 8) {
+            ZStack(alignment: .leading) {
+                Text(caption.text)
+                    .opacity(note == nil ? 1 : 0)
+                if let note {
+                    HStack(spacing: 5) {
+                        Text(note.value)
+                        Text("·")
+                        Text(note.detail)
+                            .foregroundStyle(note.alert ? Palette.critical : Palette.secondary)
+                    }
+                    .foregroundStyle(Palette.secondary)
+                    .transition(.opacity)
+                }
+            }
+            Spacer(minLength: 8)
+            if let remaining = caption.remaining {
+                Text(remaining)
+                    .foregroundStyle(Palette.secondary)
+            }
         }
-        if row.fraction > line.fraction {
-            return BarMarkLabel(value: value, detail: L10n.t("窗口刚开始", "Just started"))
-        }
-        let left = Self.percent(line.fraction - row.fraction)
-        return BarMarkLabel(value: value, detail: L10n.t("还可用 \(left)", "\(left) left"))
-    }
-
-    /// 保留一位小数，正好是整数时不带：28.6%、50%
-    private static func percent(_ fraction: Double) -> String {
-        let tenths = (fraction * 1000).rounded()
-        return tenths.truncatingRemainder(dividingBy: 10) == 0 ? "\(Int(tenths / 10))%" : String(format: "%.1f%%", tenths / 10)
-    }
-
-    /// 悬停说明：什么时候重置，安全线在哪、怎么来的，超了多少
-    private func help(_ line: LimitPace.Line?) -> String {
-        var parts: [String] = []
-        if let reset = row.resetsAt {
-            parts.append(L10n.t("重置时间：\(LimitsSection.fullDate(reset))（\(LimitsSection.zoneName)）", "Resets \(LimitsSection.fullDate(reset)) (\(LimitsSection.zoneName))"))
-        }
-        guard let line else { return parts.joined(separator: "\n") }
-        let mark = Self.percent(line.fraction)
-        if let day = line.day {
-            parts.append(L10n.t(
-                "安全线 \(mark)：今天是这一周的第 \(day) 天，今天结束前用到 \(day)/7 都不会提前用完",
-                "Safe line \(mark): day \(day) of 7, so staying under \(day)/7 by the end of today lasts the week"
-            ))
-        } else {
-            let elapsed = Fmt.countdown(line.elapsed, showSeconds: false)
-            parts.append(L10n.t(
-                "安全线 \(mark)：5 小时已过 \(elapsed)，用量不超过这个比例就能撑到重置",
-                "Safe line \(mark): \(elapsed) of the 5 hours have passed, so staying under this share lasts until the reset"
-            ))
-        }
-        if line.isExceeded(by: row.fraction) {
-            let over = Self.percent(row.fraction - line.fraction)
-            parts.append(L10n.t("已超出 \(over)，照这个速度会在重置前用完", "\(over) over the line. At this pace the limit runs out before the reset"))
-        } else if line.settling, row.fraction > line.fraction {
-            parts.append(L10n.t("窗口刚开始，先不提示超线", "The window just started, so going over is not flagged yet"))
-        }
-        return parts.joined(separator: "\n")
+        .font(.caption)
+        .foregroundStyle(Palette.tertiary)
+        .monospacedDigit()
+        .lineLimit(1)
+        .contentShape(Rectangle())
+        .help(row.help(line))
     }
 
     /// 左边是什么时候重置，右边（打开倒计时时）是还剩多久，精确到秒
@@ -246,23 +332,66 @@ private struct LimitRowView: View {
     }
 }
 
-/// 还没有官方数据时的占位行
-private struct PlaceholderRow: View {
-    let title: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.rowLabel)
-                    .foregroundStyle(Palette.secondary)
-                Spacer()
-                Text("—")
-                    .font(.rowValue)
-                    .foregroundStyle(Palette.tertiary)
-            }
-            ThinBar(fraction: 0, color: Palette.tertiary)
+extension LimitRow {
+    /// 安全线是多少，还能用多少或超了多少：「安全线 28.6%」「还可用 2.6%」
+    @MainActor
+    func safeLineNote(_ line: LimitPace.Line?) -> (value: String, detail: String, alert: Bool)? {
+        guard let line else { return nil }
+        let value = L10n.t("安全线 \(Self.percent(line.fraction))", "Safe line \(Self.percent(line.fraction))")
+        if line.isExceeded(by: fraction) {
+            let over = Self.percent(fraction - line.fraction)
+            return (value, L10n.t("超出 \(over)", "\(over) over"), true)
         }
+        if fraction > line.fraction {
+            return (value, L10n.t("窗口刚开始", "Just started"), false)
+        }
+        let left = Self.percent(line.fraction - fraction)
+        return (value, L10n.t("还可用 \(left)", "\(left) left"), false)
+    }
+
+    /// 保留一位小数，正好是整数时不带：28.6%、50%
+    static func percent(_ fraction: Double) -> String {
+        let tenths = (fraction * 1000).rounded()
+        return tenths.truncatingRemainder(dividingBy: 10) == 0 ? "\(Int(tenths / 10))%" : String(format: "%.1f%%", tenths / 10)
+    }
+
+    /// 悬停说明：什么时候重置，安全线在哪、怎么来的，超了多少
+    @MainActor
+    func help(_ line: LimitPace.Line?) -> String {
+        var parts: [String] = []
+        if let resetsAt {
+            parts.append(L10n.t("重置时间：\(LimitsSection.fullDate(resetsAt))（\(LimitsSection.zoneName)）", "Resets \(LimitsSection.fullDate(resetsAt)) (\(LimitsSection.zoneName))"))
+        }
+        guard let line else { return parts.joined(separator: "\n") }
+        let mark = Self.percent(line.fraction)
+        if let day = line.day {
+            parts.append(L10n.t(
+                "安全线 \(mark)：今天是这一周的第 \(day) 天，今天结束前用到 \(day)/7 都不会提前用完",
+                "Safe line \(mark): day \(day) of 7, so staying under \(day)/7 by the end of today lasts the week"
+            ))
+        } else {
+            let elapsed = Fmt.countdown(line.elapsed, showSeconds: false)
+            parts.append(L10n.t(
+                "安全线 \(mark)：5 小时已过 \(elapsed)，用量不超过这个比例就能撑到重置",
+                "Safe line \(mark): \(elapsed) of the 5 hours have passed, so staying under this share lasts until the reset"
+            ))
+        }
+        if line.isExceeded(by: fraction) {
+            let over = Self.percent(fraction - line.fraction)
+            parts.append(L10n.t("已超出 \(over)，照这个速度会在重置前用完", "\(over) over the line. At this pace the limit runs out before the reset"))
+        } else if line.settling, fraction > line.fraction {
+            parts.append(L10n.t("窗口刚开始，先不提示超线", "The window just started, so going over is not flagged yet"))
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    /// 简洁显示的悬停说明：没有下面那一行，先写全名、百分比和安全线，再接详细的说明
+    @MainActor
+    func compactHelp(_ line: LimitPace.Line?) -> String {
+        var first = "\(title) \(percent)%"
+        if let note = safeLineNote(line) { first += " · \(note.value) · \(note.detail)" }
+        let rest = help(line)
+        return rest.isEmpty ? first : "\(first)\n\(rest)"
     }
 }
 
@@ -400,82 +529,90 @@ struct CycleSection: View {
         let money = prefs.money
         let figures = SpanFigures.all(snapshot, money: money)
 
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n.t("本期消耗", "Spend"))
-                    .font(.sectionTitle)
-                    .foregroundStyle(Palette.secondary)
-                SpanLayers(prefs: prefs) { s in
-                    Text(figures[s]?.range ?? L10n.t("同步每周限额后显示本周区间", "The weekly range appears after the weekly limit syncs"))
-                        .lineLimit(1)
-                }
-                .font(.system(size: 11, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(Palette.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        CollapsibleSection(.spend, title: L10n.t("本期消耗", "Spend"), prefs: prefs, spacing: 10) {
+            // 日期区间写在标题右侧。还没同步每周限额时本周没有区间，下面会说明
+            SpanLayers(prefs: prefs, alignment: .trailing) { s in
+                Text(figures[s]?.range ?? "")
             }
-            SpanTabs(prefs: prefs)
-
-            SpanAvailable(prefs: prefs, snapshot: snapshot) {
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        // 每分钟刷新：日均和预计随时间变化，没有新消耗时也不会停在旧值上
+            .monospacedDigit()
+        } summary: {
+            SpendSummary(prefs: prefs, snapshot: snapshot, money: money)
+        } content: {
+            VStack(alignment: .leading, spacing: 10) {
+                SpanTabs(prefs: prefs)
+                SpanAvailable(prefs: prefs, snapshot: snapshot) {
+                    if prefs.spendDisplay == .compact {
+                        // 简洁：只留金额、预计和最近 14 天
                         TimelineView(.periodic(from: .now, by: 60)) { context in
                             CycleHeader(snapshot: snapshot, prefs: prefs, now: context.date)
                         }
-
-                        HStack(spacing: 0) {
-                            SpanStat(prefs: prefs, label: L10n.t("总 Tokens", "Tokens"), values: figures.mapValues(\.tokens), help: figures.mapValues(\.tokensHelp))
-                            Spacer()
-                            SpanStat(prefs: prefs, label: L10n.t("请求", "Requests"), values: figures.mapValues(\.requests))
-                            Spacer()
-                            // 今天的花费不随周期变化
-                            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                                Text(L10n.t("今日", "Today"))
-                                    .font(.caption)
-                                    .foregroundStyle(Palette.tertiary)
-                                Text(money.whole(snapshot.today?.cost ?? 0))
-                                    .font(.rowValue)
-                                    .foregroundStyle(Palette.text)
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                            }
-                        }
-
-                        HStack(alignment: .top, spacing: 0) {
-                            TokenColumn(prefs: prefs, label: L10n.t("新增输入", "Input"), color: Palette.input, figures: figures.mapValues(\.input))
-                            TokenColumn(prefs: prefs, label: L10n.t("输出", "Output"), color: Palette.output, figures: figures.mapValues(\.output))
-                            TokenColumn(prefs: prefs, label: L10n.t("缓存创建", "Cache write"), color: Palette.cacheWrite, figures: figures.mapValues(\.cacheWrite))
-                            TokenColumn(prefs: prefs, label: L10n.t("缓存命中", "Cache read"), color: Palette.cacheRead, figures: figures.mapValues(\.cacheRead))
-                        }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(L10n.t("缓存命中率", "Cache hit rate"))
-                                    .font(.rowLabel)
-                                    .foregroundStyle(Palette.text)
-                                Spacer()
-                                SpanLayers(prefs: prefs, alignment: .trailing) { s in
-                                    if let f = figures[s] { Text(f.saved) }
-                                }
-                                .font(.caption)
-                                .foregroundStyle(Palette.tertiary)
-                                .help(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price."))
-                                SpanLayers(prefs: prefs, alignment: .trailing) { s in
-                                    if let f = figures[s] {
-                                        Text(f.hitRate).contentTransition(.numericText(value: f.hitRateValue))
-                                    }
-                                }
-                                .font(.rowValue)
-                                .foregroundStyle(Palette.text)
-                                .monospacedDigit()
-                            }
-                            SpanBar(prefs: prefs, fractions: figures.mapValues(\.hitRateValue))
-                        }
+                    } else {
+                        details(figures, money: money)
                     }
-                    ModelLists(prefs: prefs, snapshot: snapshot, money: money)
                 }
             }
+        }
+    }
+
+    /// 详细：金额下面再列 Token 构成、缓存命中率和各模型的花费
+    private func details(_ figures: [CostSpan: SpanFigures], money: MoneyFormat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                // 每分钟刷新：日均和预计随时间变化，没有新消耗时也不会停在旧值上
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    CycleHeader(snapshot: snapshot, prefs: prefs, now: context.date)
+                }
+
+                HStack(spacing: 0) {
+                    SpanStat(prefs: prefs, label: L10n.t("总 Tokens", "Tokens"), values: figures.mapValues(\.tokens), help: figures.mapValues(\.tokensHelp))
+                    Spacer()
+                    SpanStat(prefs: prefs, label: L10n.t("请求", "Requests"), values: figures.mapValues(\.requests))
+                    Spacer()
+                    // 今天的花费不随周期变化
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(L10n.t("今日", "Today"))
+                            .font(.caption)
+                            .foregroundStyle(Palette.tertiary)
+                        Text(money.whole(snapshot.today?.cost ?? 0))
+                            .font(.rowValue)
+                            .foregroundStyle(Palette.text)
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                }
+
+                HStack(alignment: .top, spacing: 0) {
+                    TokenColumn(prefs: prefs, label: L10n.t("新增输入", "Input"), color: Palette.input, figures: figures.mapValues(\.input))
+                    TokenColumn(prefs: prefs, label: L10n.t("输出", "Output"), color: Palette.output, figures: figures.mapValues(\.output))
+                    TokenColumn(prefs: prefs, label: L10n.t("缓存创建", "Cache write"), color: Palette.cacheWrite, figures: figures.mapValues(\.cacheWrite))
+                    TokenColumn(prefs: prefs, label: L10n.t("缓存命中", "Cache read"), color: Palette.cacheRead, figures: figures.mapValues(\.cacheRead))
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(L10n.t("缓存命中率", "Cache hit rate"))
+                            .font(.rowLabel)
+                            .foregroundStyle(Palette.text)
+                        Spacer()
+                        SpanLayers(prefs: prefs, alignment: .trailing) { s in
+                            if let f = figures[s] { Text(f.saved) }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(Palette.tertiary)
+                        .help(L10n.t("如果没有 Prompt Caching，这些命中缓存的 token 需要按原价计费", "Without prompt caching, these tokens would be billed at the full input price."))
+                        SpanLayers(prefs: prefs, alignment: .trailing) { s in
+                            if let f = figures[s] {
+                                Text(f.hitRate).contentTransition(.numericText(value: f.hitRateValue))
+                            }
+                        }
+                        .font(.rowValue)
+                        .foregroundStyle(Palette.text)
+                        .monospacedDigit()
+                    }
+                    SpanBar(prefs: prefs, fractions: figures.mapValues(\.hitRateValue))
+                }
+            }
+            ModelLists(prefs: prefs, snapshot: snapshot, money: money)
         }
     }
 
@@ -566,7 +703,7 @@ private struct SpanLayers<Content: View>: View {
     }
 }
 
-/// 选中的周期还没有数据时（本周要等每周限额同步）下面的数字整块不显示
+/// 选中的周期还没有数据时（本周要等每周限额同步），下面的数字换成一句说明
 private struct SpanAvailable<Content: View>: View {
     let prefs: Preferences
     let snapshot: UsageSnapshot
@@ -575,6 +712,36 @@ private struct SpanAvailable<Content: View>: View {
     var body: some View {
         if snapshot.period(prefs.costSpan) != nil {
             content
+        } else {
+            EmptyNote(
+                icon: .calendar,
+                title: L10n.t("本周要等每周限额同步", "This week waits for the weekly limit"),
+                detail: L10n.t("本周按官方每周额度的重置时间统计，同步一次后显示", "It follows the official weekly reset and appears after one sync.")
+            )
+            .padding(.top, 2)
+        }
+    }
+}
+
+/// 收起后标题右侧：选中的周期花了多少
+private struct SpendSummary: View {
+    let prefs: Preferences
+    let snapshot: UsageSnapshot
+    let money: MoneyFormat
+
+    var body: some View {
+        let span = prefs.costSpan
+        HStack(spacing: 4) {
+            Text(span.shortTitle)
+            if let p = snapshot.period(span) {
+                Text(money.string(p.cost))
+                    .fontWeight(.medium)
+                    .foregroundStyle(Palette.secondary)
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: money.convert(p.cost)))
+            } else {
+                Text(L10n.t("等待同步", "waiting for sync"))
+            }
         }
     }
 }

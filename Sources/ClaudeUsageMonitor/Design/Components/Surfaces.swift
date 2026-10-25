@@ -68,29 +68,6 @@ struct PanelBackground: View {
 
 // MARK: - 排版元素
 
-struct SectionTitle<Trailing: View>: View {
-    let title: String
-    @ViewBuilder var trailing: Trailing
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(.sectionTitle)
-                .foregroundStyle(Palette.secondary)
-            Spacer(minLength: 8)
-            trailing
-                .font(.caption)
-                .foregroundStyle(Palette.tertiary)
-        }
-    }
-}
-
-extension SectionTitle where Trailing == EmptyView {
-    init(_ title: String) {
-        self.init(title: title) { EmptyView() }
-    }
-}
-
 struct Hairline: View {
     var body: some View {
         Rectangle()

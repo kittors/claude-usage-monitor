@@ -201,16 +201,50 @@ private func series(_ count: Int, gap: Double, duration: (Int) -> Double, output
     #expect(OutputSpeed.rate(requests, from: 200, to: 300) == nil)
 }
 
-@Test func curveEndsAtTheHeadlineNumber() throws {
+@Test func trendEndsAtTheHeadlineNumber() throws {
     let requests = series(40, gap: 45, duration: { 10 + Double($0 % 7) }, output: { 300 + $0 * 37 })
     let now = 40.0 * 45
-    let curve = OutputSpeed.curve(requests, from: now - OutputSpeed.span, to: now, count: 161)
-    #expect(curve.count == 161)
+    let trend = OutputSpeed.trend(requests, from: now - OutputSpeed.span, to: now)
     let headline = try #require(OutputSpeed.rate(requests, from: now - OutputSpeed.recent, to: now))
-    #expect(curve.last == headline.tokensPerSecond)
-    // 一开始没有请求
-    let first = try #require(curve.first)
-    #expect(first == nil)
+    let last = try #require(trend.last)
+    #expect(last.t == now)
+    #expect(last.rate == headline.tokensPerSecond)
+    // 一开始没有请求：第一个点是第一次回复写完的时刻，之后每次回复一个点，再加上现在
+    #expect(trend.first?.t == 0)
+    #expect(trend.count == 41)
+}
+
+@Test func trendSkipsQuietStretchesInsteadOfBreaking() throws {
+    // 两段回复中间隔了 20 分钟：中间不取点，线从第一段最后一次直接连到第二段第一次
+    let requests = [
+        sample(1, end: 100, duration: 10, output: 900),
+        sample(2, end: 160, duration: 20, output: 400),
+        sample(3, end: 1400, duration: 10, output: 800),
+        sample(4, end: 1430, duration: 10, output: 1000),
+    ]
+    let trend = OutputSpeed.trend(requests, from: 0, to: 1500)
+    let times: [Double] = trend.map(\.t)
+    #expect(times == [100, 160, 1400, 1430, 1500])
+    // 每个点都是那一刻往前 5 分钟的均速：160 那一刻窗口里有前两次，(900 + 400) ÷ (10 + 20)
+    let second = try #require(trend.dropFirst().first)
+    let expected: Double = 1300.0 / 30
+    let error: Double = abs(second.rate - expected)
+    #expect(error < 1e-9)
+    // 同一时刻写完的两次只取一个点
+    let twins = [sample(1, end: 50, duration: 10, output: 500), sample(2, end: 50, duration: 10, output: 700)]
+    let twinTimes: [Double] = OutputSpeed.trend(twins, from: 0, to: 60).map(\.t)
+    #expect(twinTimes == [50, 60])
+}
+
+@Test func trendStopsAtTheLastReplyWhenTheLastFiveMinutesAreQuiet() {
+    // 现在往前 5 分钟没有回复：没有「现在」这个点，主数字是「–」，线停在最后一次回复
+    let requests = [sample(1, end: 100, duration: 10, output: 900)]
+    let quiet: [Double] = OutputSpeed.trend(requests, from: 0, to: 1000).map(\.t)
+    #expect(quiet == [100])
+    // 开头那一刻窗口里已经有回复时，从开头画起
+    let early = [sample(1, end: -60, duration: 10, output: 900), sample(2, end: 30, duration: 10, output: 600)]
+    let earlyTimes: [Double] = OutputSpeed.trend(early, from: 0, to: 60).map(\.t)
+    #expect(earlyTimes == [0, 30, 60])
 }
 
 @Test func ceilingKeepsMostPointsInside() {

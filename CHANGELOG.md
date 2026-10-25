@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.5] - 2026-10-25
+
+### Fixed
+
+- The output speed line no longer breaks into pieces when a few minutes pass without a reply, and no longer drops to the bottom when only one slow reply is left in the window. It now takes a point each time a reply finishes, at that moment's 5-minute average, and joins the points with a smooth curve that never swings past them. The right end is still the current 5-minute average, the number above the chart. Pointing at the simple line snaps to the nearest reply.
+
 ## [1.6.4] - 2026-10-25
 
 ### Changed

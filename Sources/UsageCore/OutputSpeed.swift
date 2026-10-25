@@ -144,15 +144,41 @@ public enum OutputSpeed {
         return Rate(output: output, duration: duration, count: count)
     }
 
-    /// 近 5 分钟均速随时间的变化：从 from 到 to 等距取 count 个时刻，每个时刻往前看 5 分钟。窗口里没有请求时为 nil。
-    /// 最后一个值就是 `to` 时刻的近 5 分钟均速，和主数字是同一个数
-    public static func curve(_ requests: [TimedRequest], from: Double, to: Double, count: Int) -> [Double?] {
-        guard count > 1, to > from else { return [] }
-        let step = (to - from) / Double(count - 1)
-        return (0..<count).map { i in
-            let t = i == count - 1 ? to : from + Double(i) * step
-            return rate(requests, from: t - recent, to: t)?.tokensPerSecond
+    /// 均速线上的一个点：这一刻往前 5 分钟的均速
+    public struct TrendPoint: Sendable, Equatable {
+        public var t: Double
+        public var rate: Double
+
+        public init(t: Double, rate: Double) {
+            self.t = t
+            self.rate = rate
         }
+    }
+
+    /// 近 5 分钟均速随时间的变化，只在有新数据的时刻取点：开头那一刻、每次回复写完的那一刻、现在。
+    /// 没有回复的时段不取点，画出来的线从上一次直接连到下一次，不会因为某 5 分钟里没有回复而断成几截，
+    /// 也不会在旧回复滑出窗口、只剩一次慢回复的那几分钟里贴着底走。
+    /// 最后一个点就是 `to` 时刻的近 5 分钟均速，和主数字是同一个数；那 5 分钟里没有回复时没有这个点，线停在最后一次回复
+    public static func trend(_ requests: [TimedRequest], from: Double, to: Double) -> [TrendPoint] {
+        guard to > from else { return [] }
+        var points: [TrendPoint] = []
+        func add(_ t: Double) {
+            if let r = rate(requests, from: t - recent, to: t) { points.append(TrendPoint(t: t, rate: r.tokensPerSecond)) }
+        }
+        add(from)
+        // 同一时刻写完的几次回复只取一个点：那一刻的窗口已经把它们都算进去了
+        var last = from
+        var i = firstIndex(requests, endingAfter: from)
+        while i < requests.count, requests[i].end < to {
+            let t = requests[i].end
+            if t > last {
+                add(t)
+                last = t
+            }
+            i += 1
+        }
+        add(to)
+        return points
     }
 
     /// 纵轴上限：大多数点都放得下，偶尔一次特别快的贴在顶上，不把其他点压扁。取 50 的整数倍，至少 150

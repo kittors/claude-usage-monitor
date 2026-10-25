@@ -11,8 +11,8 @@ struct SpeedSection: View {
     let prefs: Preferences
 
     @Environment(\.panelVisible) private var visible
-    /// 简洁：指针停在折线的哪个时刻
-    @State private var hoveredMoment: Double?
+    /// 简洁：指针停在折线上离现在多少秒。存距离而不是时刻：折线每秒左移，指针不动时，指着的是它下面现在那个点
+    @State private var hoveredAge: Double?
     /// 详细：指针停在哪一次回复上
     @State private var hoveredReply: UInt64?
 
@@ -22,8 +22,14 @@ struct SpeedSection: View {
         TimelineView(.animation(minimumInterval: 1, paused: !visible)) { context in
             SpeedContent(
                 store: store, prefs: prefs, now: context.date.timeIntervalSince1970, detailed: detailed,
-                hoveredMoment: $hoveredMoment, hoveredReply: $hoveredReply
+                hoveredAge: $hoveredAge, hoveredReply: $hoveredReply
             )
+        }
+        // 面板收起时指针离开的事件不会来：下次打开不能还停在上次指着的那一点
+        .onChange(of: visible) { _, visible in
+            guard !visible else { return }
+            hoveredAge = nil
+            hoveredReply = nil
         }
     }
 
@@ -93,7 +99,7 @@ private struct SpeedContent: View {
     let prefs: Preferences
     let now: Double
     let detailed: Bool
-    @Binding var hoveredMoment: Double?
+    @Binding var hoveredAge: Double?
     @Binding var hoveredReply: UInt64?
 
     var body: some View {
@@ -118,7 +124,7 @@ private struct SpeedContent: View {
             if replied {
                 SpeedFigures(
                     store: store, models: models, model: model, now: now, detailed: detailed,
-                    hoveredMoment: $hoveredMoment, hoveredReply: $hoveredReply
+                    hoveredAge: $hoveredAge, hoveredReply: $hoveredReply
                 )
             } else {
                 SpeedEmpty(untimed: untimed, generating: !pending.isEmpty)
@@ -146,13 +152,16 @@ private struct SpeedFigures: View {
     let model: ModelSpeed?
     let now: Double
     let detailed: Bool
-    @Binding var hoveredMoment: Double?
+    @Binding var hoveredAge: Double?
     @Binding var hoveredReply: UInt64?
 
     var body: some View {
         let requests = model?.requests ?? []
         let recent = OutputSpeed.rate(requests, from: now - OutputSpeed.recent, to: now)
         let hour = OutputSpeed.rate(requests, from: now - OutputSpeed.span, to: now)
+        // 简洁时右边的折线和指着它时左下那一行用同一组点
+        let trend = detailed ? [] : OutputSpeed.trend(requests, from: now - OutputSpeed.span, to: now)
+        let pointed = hoveredAge.flatMap { SpeedLine.nearest(trend, to: now - $0) }.map { trend[$0] }
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom, spacing: 12) {
@@ -161,9 +170,9 @@ private struct SpeedFigures: View {
                         .tip("speed.recent") { SpeedSection.recentTip(recent, hour: detailed ? nil : hour, model: model) }
                     ZStack(alignment: .leading) {
                         ModelSwitch(store: store, models: models, current: model, now: now)
-                            .opacity(hoveredMoment == nil ? 1 : 0)
-                        if let t = hoveredMoment, !detailed {
-                            Text(SpeedSection.moment(t, requests: requests))
+                            .opacity(pointed == nil ? 1 : 0)
+                        if let pointed {
+                            Text(SpeedSection.moment(pointed.t, requests: requests))
                                 .font(.caption)
                                 .foregroundStyle(Palette.tertiary)
                                 .monospacedDigit()
@@ -177,7 +186,7 @@ private struct SpeedFigures: View {
                         .tip("speed.hour") { SpeedSection.hourTip(hour, model: model) }
                 } else {
                     // 指着折线时左下那一行换成那一刻的速度，不另外浮起说明，免得挡住折线
-                    SpeedSparkline(requests: requests, now: now, hovered: $hoveredMoment)
+                    SpeedSparkline(trend: trend, now: now, hoveredAge: $hoveredAge)
                         .frame(width: 104, height: 30)
                         .padding(.bottom, 3)
                 }
@@ -192,7 +201,7 @@ private struct SpeedFigures: View {
         }
         // 换成说明或收起时，指针离开的事件不会再来，悬停留下的时刻要清掉
         .onDisappear {
-            hoveredMoment = nil
+            hoveredAge = nil
             hoveredReply = nil
         }
     }
@@ -355,64 +364,51 @@ private struct ModelSwitch: View {
 /// 最近 1 小时里近 5 分钟均速的变化，右端是现在、也就是左边的大数字。和本期消耗的柱状图一样大，没有坐标轴。
 /// 纵轴按这一小时的高低缩放，只看变化；范围至少是最高值的三成，几 tok/s 的抖动不会被放大成大起伏
 private struct SpeedSparkline: View {
-    let requests: [TimedRequest]
+    let trend: [OutputSpeed.TrendPoint]
     let now: Double
-    @Binding var hovered: Double?
+    @Binding var hoveredAge: Double?
 
     var body: some View {
         GeometryReader { geo in
             let size = geo.size
-            let count = max(2, Int(size.width / 2) + 1)
-            let from = now - OutputSpeed.span
-            let values = OutputSpeed.curve(requests, from: from, to: now, count: count)
-            let scale = Scale(size: size, count: count, values: values.compactMap { $0 })
-            let point = scale.point
-            let hoveredIndex = hovered.map { scale.index(($0 - from) / OutputSpeed.span) }
+            let scale = Scale(size: size, now: now, values: trend.map(\.rate))
+            let points = trend.map(scale.point)
+            let pointed = hoveredAge.flatMap { SpeedLine.nearest(trend, to: now - $0) }
 
             Canvas { context, _ in
-                guard values.contains(where: { $0 != nil }) else {
+                guard !points.isEmpty else {
                     // 最近 1 小时没有回复：只留一条淡淡的底线
                     context.fill(Path(CGRect(x: 0, y: size.height - 1.5, width: size.width, height: 1.5)), with: .color(Color.white.opacity(0.12)))
                     return
                 }
-                // 窗口里没有回复的地方断开
-                var line = Path()
-                var drawing = false
-                for (i, value) in values.enumerated() {
-                    guard let value else {
-                        drawing = false
-                        continue
-                    }
-                    if drawing { line.addLine(to: point(i, value)) } else { line.move(to: point(i, value)) }
-                    drawing = true
-                }
-                context.stroke(line, with: .color(Color.white.opacity(0.55)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                context.stroke(SpeedLine.path(points), with: .color(Color.white.opacity(0.55)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
             }
             .overlay(alignment: .topLeading) {
-                // 现在：和柱状图里的今天一样用强调色，新回复写进来时滑到新的高度
-                if let last = values.last ?? nil {
+                // 现在：和柱状图里的今天一样用强调色，新回复写进来时滑到新的高度。近 5 分钟没有回复时线停在最后一次回复，不画这个点
+                if let last = trend.last, last.t == now, let point = points.last {
                     Circle()
                         .fill(Palette.accent)
                         .frame(width: 5, height: 5)
-                        .position(point(count - 1, last))
-                        .animation(.smooth(duration: 0.5), value: last)
+                        .position(point)
+                        .animation(.smooth(duration: 0.5), value: last.rate)
                 }
-                if let i = hoveredIndex, let value = values[i] {
+                if let i = pointed {
                     Circle()
                         .fill(Palette.text)
                         .frame(width: 4, height: 4)
-                        .position(point(i, value))
+                        .position(points[i])
                 }
             }
             .contentShape(Rectangle())
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let p):
-                    let i = scale.index(Double(p.x / size.width))
-                    let t = from + OutputSpeed.span * Double(i) / Double(count - 1)
-                    if hovered != t { hovered = t }
+                    // 吸附到最近的那次回复，记下它离现在多久；换到另一个点时才更新
+                    let t = now - OutputSpeed.span * Double(1 - min(max(p.x / max(size.width, 1), 0), 1))
+                    let age = SpeedLine.nearest(trend, to: t).map { now - trend[$0].t }
+                    if hoveredAge != age { hoveredAge = age }
                 case .ended:
-                    hovered = nil
+                    hoveredAge = nil
                 }
             }
             .accessibilityElement()
@@ -420,16 +416,16 @@ private struct SpeedSparkline: View {
         }
     }
 
-    /// 第 i 个时刻的值画在哪
+    /// 每个点画在哪：横向按时间，最右边是现在
     private struct Scale {
         let size: CGSize
-        let count: Int
+        let now: Double
         let bottom: Double
         let range: Double
 
-        init(size: CGSize, count: Int, values: [Double]) {
+        init(size: CGSize, now: Double, values: [Double]) {
             self.size = size
-            self.count = count
+            self.now = now
             let low = values.min() ?? 0
             let high = values.max() ?? 1
             let span = max(high - low, high * 0.3, 1)
@@ -438,17 +434,93 @@ private struct SpeedSparkline: View {
             range = span * 1.2
         }
 
-        func point(_ i: Int, _ value: Double) -> CGPoint {
-            let x = size.width * CGFloat(i) / CGFloat(count - 1)
-            let rise = (size.height - 2) * CGFloat(min(max((value - bottom) / range, 0), 1))
+        func point(_ p: OutputSpeed.TrendPoint) -> CGPoint {
+            let x = size.width * CGFloat(1 - (now - p.t) / OutputSpeed.span)
+            let rise = (size.height - 2) * CGFloat(min(max((p.rate - bottom) / range, 0), 1))
             return CGPoint(x: x, y: size.height - 1 - rise)
         }
+    }
+}
 
-        /// 横向位置（0…1）最近的那个时刻
-        func index(_ fraction: Double) -> Int {
-            let raw = Int((fraction * Double(count - 1)).rounded())
-            return min(max(raw, 0), count - 1)
+/// 均速线的画法和取点，详细的图和简洁的折线共用
+private enum SpeedLine {
+    /// 横向挨得比这个近的点只留后一个：一小时几百次回复时，线不会在一个像素里来回折
+    private static let minimumGap: CGFloat = 1.5
+
+    /// 经过每个点的平滑曲线。两点之间用单调三次曲线（Steffen 方法，和 d3 的 monotoneX 一样），
+    /// 只会在这两个点的高低之间，不会冲出去画出比实际更高或更低的弯
+    static func path(_ points: [CGPoint]) -> Path {
+        let p = thinned(points)
+        var path = Path()
+        guard let first = p.first else { return path }
+        path.move(to: first)
+        guard p.count > 2 else {
+            // 只有一个点时画成一个圆点（圆头的零长度线段）
+            path.addLine(to: p.count == 2 ? p[1] : first)
+            return path
         }
+        let n = p.count
+        var h = [CGFloat](repeating: 0, count: n - 1)
+        var slope = [CGFloat](repeating: 0, count: n - 1)
+        for i in 0..<(n - 1) {
+            h[i] = p[i + 1].x - p[i].x
+            slope[i] = h[i] > 0 ? (p[i + 1].y - p[i].y) / h[i] : 0
+        }
+        var tangent = [CGFloat](repeating: 0, count: n)
+        for i in 1..<(n - 1) {
+            let s0 = slope[i - 1], s1 = slope[i]
+            let mean = (s0 * h[i] + s1 * h[i - 1]) / (h[i - 1] + h[i])
+            let limit = min(abs(s0), abs(s1), abs(mean) / 2)
+            tangent[i] = (sign(s0) + sign(s1)) * limit
+        }
+        tangent[0] = endTangent(slope[0], neighbor: tangent[1])
+        tangent[n - 1] = endTangent(slope[n - 2], neighbor: tangent[n - 2])
+        for i in 0..<(n - 1) {
+            let dx = h[i] / 3
+            path.addCurve(
+                to: p[i + 1],
+                control1: CGPoint(x: p[i].x + dx, y: p[i].y + dx * tangent[i]),
+                control2: CGPoint(x: p[i + 1].x - dx, y: p[i + 1].y - dx * tangent[i + 1])
+            )
+        }
+        return path
+    }
+
+    /// 离 t 最近的点（点按时间排好）
+    static func nearest(_ trend: [OutputSpeed.TrendPoint], to t: Double) -> Int? {
+        guard !trend.isEmpty else { return nil }
+        var lo = 0, hi = trend.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if trend[mid].t < t { lo = mid + 1 } else { hi = mid }
+        }
+        if lo == 0 { return 0 }
+        if lo == trend.count { return trend.count - 1 }
+        return t - trend[lo - 1].t <= trend[lo].t - t ? lo - 1 : lo
+    }
+
+    private static func thinned(_ points: [CGPoint]) -> [CGPoint] {
+        var kept: [CGPoint] = []
+        kept.reserveCapacity(points.count)
+        for point in points {
+            if kept.count > 1, let last = kept.last, point.x - last.x < minimumGap {
+                kept[kept.count - 1] = point
+            } else {
+                kept.append(point)
+            }
+        }
+        return kept
+    }
+
+    private static func sign(_ v: CGFloat) -> CGFloat {
+        v > 0 ? 1 : (v < 0 ? -1 : 0)
+    }
+
+    /// 两端的切线：照着旁边那段推，再限住大小、方向和那一段一致，第一段和最后一段也不会冲出去
+    private static func endTangent(_ slope: CGFloat, neighbor: CGFloat) -> CGFloat {
+        let t = (3 * slope - neighbor) / 2
+        if sign(t) != sign(slope) { return 0 }
+        return abs(t) > 3 * abs(slope) ? 3 * slope : t
     }
 }
 
@@ -565,21 +637,9 @@ private struct SpeedChart: View {
             context.fill(dot, with: .color(r.id == hovered ? Palette.accent : Color.white.opacity(0.22)))
         }
 
-        // 近 5 分钟均速：每 2pt 取一个时刻，窗口里没有回复的地方断开。最右端就是上面的大数字
-        let count = max(2, Int(layout.plotWidth / 2))
-        let values = OutputSpeed.curve(requests, from: now - OutputSpeed.span, to: now, count: count)
-        var line = Path()
-        var drawing = false
-        for (i, value) in values.enumerated() {
-            guard let value else {
-                drawing = false
-                continue
-            }
-            let t = now - OutputSpeed.span + OutputSpeed.span * Double(i) / Double(count - 1)
-            let p = CGPoint(x: layout.x(t), y: layout.y(value))
-            if drawing { line.addLine(to: p) } else { line.move(to: p) }
-            drawing = true
-        }
+        // 近 5 分钟均速：每次回复写完时取一个点，连成一条平滑的线，没有回复的时段直接连过去。最右端就是上面的大数字
+        let trend = OutputSpeed.trend(requests, from: now - OutputSpeed.span, to: now)
+        let line = SpeedLine.path(trend.map { CGPoint(x: layout.x($0.t), y: layout.y($0.rate)) })
         context.stroke(line, with: .color(Color.white.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
 
         // 正在生成：从发出那一刻画到现在，几个同时在跑时往上错开

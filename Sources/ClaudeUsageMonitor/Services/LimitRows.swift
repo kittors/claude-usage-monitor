@@ -38,7 +38,7 @@ struct LimitRow: Identifiable, Equatable {
 }
 
 extension UsageStore {
-    /// 当前应展示的限额行：第一行为 5 小时，第二行为本周全部模型，之后是按模型划分的周额度
+    /// 当前应展示的限额行：接口提供的 5 小时、本周全部模型与按模型划分的周额度
     var limitRows: [LimitRow] {
         // 依赖 resetEpoch：到了重置时间，界面会重新取一遍，那一行归零
         _ = resetEpoch
@@ -82,15 +82,17 @@ extension UsageStore {
     static func rows(from usage: OfficialUsage, now: Date) -> [LimitRow] {
         var rows: [LimitRow] = []
 
-        // 5 小时：没有进行中的窗口时官方返回 0% 且没有重置时间
-        let five = usage.fiveHour ?? OfficialLimit(utilization: 0, resetsAt: nil)
-        let fiveTitle = L10n.tNow("5 小时", "5-hour")
-        if let reset = five.resetsAt {
-            rows.append(reset > now
-                ? LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: five.percent, reset: .countdown(reset), resetsAt: reset)
-                : LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: 0, reset: .elapsed, resetsAt: reset))
-        } else {
-            rows.append(LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: five.percent, reset: .idle))
+        // 已验证的 Ultra 账号没有 5 小时限额；只展示接口实际提供的窗口。
+        // 仍有窗口但尚未使用时，官方返回 0% 且没有重置时间。
+        if let five = usage.fiveHour {
+            let fiveTitle = L10n.tNow("5 小时", "5-hour")
+            if let reset = five.resetsAt {
+                rows.append(reset > now
+                    ? LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: five.percent, reset: .countdown(reset), resetsAt: reset)
+                    : LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: 0, reset: .elapsed, resetsAt: reset))
+            } else {
+                rows.append(LimitRow(id: "five", title: fiveTitle, shortTitle: fiveTitle, percent: five.percent, reset: .idle))
+            }
         }
 
         if let week = usage.sevenDay {

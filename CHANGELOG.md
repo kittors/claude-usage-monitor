@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-10-31
+
+### Changed
+
+- The panel and Settings > Usage now show Pro, Max and Ultra: Max 5x is now Max, and Max 20x is now Ultra. A 5-hour limit is shown only when the official usage response includes it, so accounts without one keep their weekly limits without an idle 0% session row.
+
 ## [1.6.5] - 2026-10-25
 
 ### Fixed

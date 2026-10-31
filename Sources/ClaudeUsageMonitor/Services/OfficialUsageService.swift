@@ -12,11 +12,12 @@ struct AccountProfile: Equatable {
 
     var plan: Plan? {
         let tier = (rateLimitTier ?? "").lowercased()
-        if tier.contains("20x") { return .max20x }
-        if tier.contains("5x") { return .max5x }
+        // 服务端仍沿用改名前的档位；Max 20x 现在称为 Ultra。
+        if tier.contains("20x") { return .ultra }
+        if tier.contains("5x") { return .max }
         switch organizationType?.lowercased() {
         case "claude_pro": return .pro
-        case "claude_max": return .max5x
+        case "claude_max": return .max
         case "claude_team": return .team
         case "claude_enterprise": return .enterprise
         default: return nil

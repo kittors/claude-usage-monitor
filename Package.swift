@@ -27,5 +27,11 @@ let package = Package(
             path: "Tests/UsageCoreTests",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "ClaudeUsageMonitorTests",
+            dependencies: ["ClaudeUsageMonitor"],
+            path: "Tests/ClaudeUsageMonitorTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

@@ -4,15 +4,19 @@ import UsageCore
 
 /// 订阅套餐（由服务端账号资料识别，只用于展示）
 enum Plan: String, CaseIterable, Identifiable, Codable {
-    case pro, max5x, max20x, team, enterprise
+    case pro
+    // 保留已发布版本的缓存值：Max 5x 改名为 Max，Max 20x 改名为 Ultra。
+    case max = "max5x"
+    case ultra = "max20x"
+    case team, enterprise
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .pro: "Pro"
-        case .max5x: "Max 5×"
-        case .max20x: "Max 20×"
+        case .max: "Max"
+        case .ultra: "Ultra"
         case .team: "Team"
         case .enterprise: "Enterprise"
         }

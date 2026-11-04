@@ -4,11 +4,20 @@ import OSLog
 import SwiftUI
 import UsageCore
 
-/// 账号资料（`GET /api/oauth/profile`）：服务端实时的套餐档位。
+/// 账号资料（`GET /api/oauth/profile`）：服务端实时的套餐档位和订阅状态。
 /// 注意凭据里也存有 `rateLimitTier`，但那是登录时的快照，升级套餐后不会更新，不能用来判断套餐。
 struct AccountProfile: Equatable {
     let organizationType: String?
     let rateLimitTier: String?
+    /// Stripe 的订阅状态（active、past_due、canceled…）
+    var subscriptionStatus: String? = nil
+    /// 续费付款需要验证时，官方给出的付款页面（Stripe 托管的账单）
+    var paymentActionURL: URL? = nil
+
+    /// 订阅还在不在、付款有没有出问题；认不出时为 nil
+    var health: SubscriptionHealth? {
+        SubscriptionHealth(status: subscriptionStatus, paymentActionRequired: paymentActionURL != nil, hasPaidPlan: plan != nil)
+    }
 
     var plan: Plan? {
         let tier = (rateLimitTier ?? "").lowercased()
@@ -29,7 +38,9 @@ struct AccountProfile: Equatable {
         let org = json["organization"] as? [String: Any]
         return AccountProfile(
             organizationType: org?["organization_type"] as? String,
-            rateLimitTier: org?["rate_limit_tier"] as? String
+            rateLimitTier: org?["rate_limit_tier"] as? String,
+            subscriptionStatus: org?["subscription_status"] as? String,
+            paymentActionURL: (org?["payment_auth_hosted_invoice_url"] as? String).flatMap { $0.isEmpty ? nil : URL(string: $0) }
         )
     }
 }
@@ -241,6 +252,10 @@ final class OfficialUsageService {
     private(set) var usage: OfficialUsage?
     /// 来自服务端账号资料的套餐（无法确定时为 nil）
     private(set) var detectedPlan: Plan?
+    /// 官方订阅状态（和套餐一起从账号资料读取）。还没读到或认不出时为 nil
+    private(set) var subscriptionHealth: SubscriptionHealth?
+    /// 上次读到账号资料的时间
+    private(set) var profileCheckedAt: Date?
     /// 最近一次由本 App 完成续期的时间
     private(set) var lastRenewal: Date?
     /// Claude Code 登录（refresh token）的有效期：到期后无法续期，需要重新登录
@@ -253,6 +268,8 @@ final class OfficialUsageService {
     private(set) var isFetching = false
 
     @ObservationIgnored var onChange: (() -> Void)?
+    /// 多久读一次账号资料。平时 6 小时；快到扣费日、刚进入新的一期或订阅出了问题时，UsageStore 改成 1 小时
+    @ObservationIgnored var profileInterval: TimeInterval = 6 * 3600
     /// 登录快过期时自动续期（与偏好设置同步，默认开启）
     @ObservationIgnored var autoRenew = true
     /// 非空时，用量和续期都从这里出去；空则使用系统代理
@@ -297,6 +314,10 @@ final class OfficialUsageService {
             state = .disabled
             usage = nil
             credentials = nil
+            // 不再读取账号资料：订阅状态不再更新，不留着旧的结论
+            subscriptionHealth = nil
+            profileCheckedAt = nil
+            lastProfileFetch = .distantPast
             onChange?()
         }
     }
@@ -338,7 +359,7 @@ final class OfficialUsageService {
         let request = FetchRequest(
             cached: credentials,
             autoRenew: autoRenew,
-            wantsProfile: now.timeIntervalSince(lastProfileFetch) > 6 * 3600,
+            wantsProfile: now.timeIntervalSince(lastProfileFetch) > profileInterval,
             deadRefreshToken: deadRefreshToken,
             proxy: outboundProxy,
             blockIPv6: blockIPv6
@@ -446,7 +467,9 @@ final class OfficialUsageService {
             if renewed { lastRenewal = now }
             if let profile {
                 detectedPlan = profile.plan
+                subscriptionHealth = profile.health
                 lastProfileFetch = now
+                profileCheckedAt = now
             }
             state = .connected
             retryAfter = .distantPast
@@ -507,6 +530,8 @@ final class OfficialUsageService {
     /// 需要重新登录：清掉与这次登录相关的信息，重新登录（可能换了账号）后重新获取套餐
     private func signedOut() {
         loginExpiresAt = nil
+        subscriptionHealth = nil
+        profileCheckedAt = nil
         lastProfileFetch = .distantPast
     }
 

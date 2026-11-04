@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-05
+
+### Added
+
+- The panel shows your plan as a badge beside the title, PRO outlined, MAX tinted and ULTRA solid in Claude's clay, followed by the days left in your subscription period, such as "23 days left". The days turn amber in the last 3 days. A Claude Code login can't read the renewal date, so the period follows your billing day in Settings > Usage, on the same clock as the billing month, and nothing is shown until you pick a billing day. Point at the badge for the end date, the subscription status and when the login expires.
+- The subscription status now comes from your official account profile, read along with the plan: every 6 hours, and every hour near the billing day or right after a new period starts. A failed renewal payment, a payment that needs confirming, or an ended subscription shows in red beside the badge.
+- Expiry reminders: a notification 3 days and 1 day before the billing day, when the subscription status shows a problem, and 1 day before the Claude Code login expires. Turn them off in Settings > Menu Bar > Expiry reminders. Settings > Panel > Subscription can show the days left only when something needs attention.
+- When notifications for the app are off in System Settings, Settings > Menu Bar says the alerts won't appear and opens the right page.
+
 ## [1.6.6] - 2026-10-31
 
 ### Changed

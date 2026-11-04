@@ -440,12 +440,111 @@ private struct Header: View {
             Spacer()
             // 套餐来自服务端账号资料（凭据里的档位是登录时的快照，升级后不会更新）
             if let plan = store.official.detectedPlan ?? prefs.plan {
-                Text(plan.title)
-                    .font(.caption)
-                    .foregroundStyle(Palette.tertiary)
+                PlanBadge(plan: plan, store: store, prefs: prefs)
             }
         }
         .frame(height: 22)
+    }
+}
+
+/// 套餐名，后面跟着订阅还剩几天（按设置里的每月扣费日），或者官方显示的订阅问题。细节在悬停说明里
+private struct PlanBadge: View {
+    let plan: Plan
+    let store: UsageStore
+    let prefs: Preferences
+
+    var body: some View {
+        let label = Self.label(term: store.subscriptionTerm, health: store.official.subscriptionHealth, display: prefs.subscriptionDisplay)
+        HStack(spacing: 7) {
+            PlanTag(plan: plan)
+            if let label {
+                Text(label.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(label.color)
+                    .monospacedDigit()
+            }
+        }
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .tip("subscription") { tip }
+    }
+
+    /// 官方显示订阅有问题时总会写出来；还剩几天按设置显示（「异常时」只在还剩 3 天以内显示）
+    static func label(term: SubscriptionTerm?, health: SubscriptionHealth?, display: SubscriptionDisplay) -> (text: String, color: Color)? {
+        if let health, health != .active { return (problem(health), Palette.critical) }
+        guard let term, display == .always || term.isEnding else { return nil }
+        return (daysLeft(term), term.isEnding ? Palette.warning : Palette.tertiary)
+    }
+
+    static func daysLeft(_ term: SubscriptionTerm) -> String {
+        switch term.daysLeft {
+        case 0: L10n.t("今天到期", "Ends today")
+        case 1: L10n.t("明天到期", "Ends tomorrow")
+        default: L10n.t("还剩 \(term.daysLeft) 天", "\(term.daysLeft) days left")
+        }
+    }
+
+    static func problem(_ health: SubscriptionHealth) -> String {
+        switch health {
+        case .paymentFailed: L10n.t("扣款失败", "Payment failed")
+        case .actionRequired: L10n.t("付款待验证", "Confirm payment")
+        case .inactive: L10n.t("订阅已失效", "Ended")
+        case .active: L10n.t("正常", "Active")
+        }
+    }
+
+    private var tip: Tip {
+        let official = store.official
+        let health = official.subscriptionHealth
+        var rows: [Tip.Row] = []
+        if let term = store.subscriptionTerm {
+            rows.append(Tip.Row(L10n.t("本期到", "Period ends"), CycleSection.dayWithWeekday(term.end)))
+        }
+        let troubled = health != nil && health != .active
+        rows.append(Tip.Row(L10n.t("订阅状态", "Status"), statusText, color: troubled ? Palette.critical : nil))
+        if let login = official.loginExpiresAt {
+            rows.append(Tip.Row(L10n.t("登录有效期至", "Login valid until"), Self.moment(login)))
+        }
+        return Tip(rows: rows, note: note)
+    }
+
+    /// 今天 06:24 / 明天 06:24 / 11月28日 06:24：不写星期，一行放得下。和重置时间一样就近取整到分钟
+    static func moment(_ date: Date) -> String {
+        let cal = Calendar.autoupdatingCurrent
+        if cal.isDateInToday(date) || cal.isDateInTomorrow(date) { return LimitsSection.longMoment(date) }
+        let rounded = Date(timeIntervalSince1970: (date.timeIntervalSince1970 / 60).rounded() * 60)
+        return LimitsSection.formatter(Localization.shared.isChinese ? "M月d日 HH:mm" : "MMM d, HH:mm").string(from: rounded)
+    }
+
+    private var statusText: String {
+        let official = store.official
+        if let health = official.subscriptionHealth {
+            let checked = official.profileCheckedAt.map { " · " + L10n.t("\(Fmt.relative($0))确认", "checked \(Fmt.relative($0))") } ?? ""
+            return Self.problem(health) + checked
+        }
+        if official.state == .disabled { return L10n.t("官方用量已关闭", "Official usage is off") }
+        return official.profileCheckedAt == nil ? L10n.t("等待同步", "Not checked yet") : L10n.t("无法判断", "Unknown")
+    }
+
+    private var note: String {
+        switch store.official.subscriptionHealth {
+        case .paymentFailed:
+            return L10n.t("续费没扣成功，Anthropic 会再试几次。请到 claude.ai 的「设置 › 账单」更新付款方式。", "The renewal payment failed and Anthropic will retry. Update the payment method in Settings > Billing on claude.ai.")
+        case .actionRequired:
+            return L10n.t("续费付款需要验证，请到 claude.ai 的「设置 › 账单」完成付款。", "The renewal payment needs confirming. Finish it in Settings > Billing on claude.ai.")
+        case .inactive:
+            return L10n.t("官方账号资料显示订阅已经结束，可以在 claude.ai 重新订阅。", "Your official account profile shows the subscription has ended. You can subscribe again on claude.ai.")
+        case .active, .none:
+            guard store.subscriptionTerm != nil else {
+                return L10n.t("在「设置 › 用量」选好每月扣费日后，这里显示本期还剩几天，并在到期前提醒。", "Choose your billing day in Settings > Usage to see the days left here and get reminders before it ends.")
+            }
+            return L10n.t(
+                "按每月扣费日（\(prefs.billingAnchorDay) 日）计算，准确日期以 claude.ai 的账单页为准。订阅状态来自官方账号资料。",
+                "Counted from your billing day (day \(prefs.billingAnchorDay)). The claude.ai billing page has the exact date. The status comes from your official account profile."
+            )
+        }
     }
 }
 

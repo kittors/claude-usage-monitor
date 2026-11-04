@@ -78,8 +78,8 @@ API-equivalent cost for this week, the billing month, or today, with a projected
 </td>
 <td valign="top">
 
-**Stays signed in**<br>
-Renews the Claude Code login the way Claude Code does, with the same locks, so the numbers never go stale. Shows running Claude sessions too.
+**Knows your login and plan**<br>
+Renews the Claude Code login the way Claude Code does, with the same locks, so the numbers never go stale. The plan badge shows the days left in your subscription and alerts you near the end, on a failed payment, or if it ends. Shows running Claude sessions too.
 
 </td>
 </tr>
@@ -175,6 +175,16 @@ A Claude Code access token lasts about 8 hours, and only the Claude Code CLI ref
 - If Claude Code refreshes or signs in during the attempt, the app keeps that result.
 
 The login itself also expires, on the date shown in Settings. After that, or after you sign out elsewhere, the panel offers **Sign in with Claude Code in Terminal**, which runs `claude auth login`.
+
+</details>
+
+<details>
+<summary><b>Subscription and reminders</b></summary>
+<br>
+
+The plan badge at the top of the panel (PRO outlined, MAX tinted, ULTRA solid) shows the days left in the current period. A Claude Code login can't read the renewal date, because the billing endpoint only accepts a claude.ai web session. So the period follows **Settings > Usage > Billing day**, on the same clock as the billing month, and nothing is shown until you pick a billing day. The subscription status comes from `GET https://api.anthropic.com/api/oauth/profile`, read along with the plan: every 6 hours, and every hour near the billing day or right after a new period starts. A failed or unconfirmed payment, or an ended subscription, turns the text beside the badge red.
+
+It notifies you 3 days and 1 day before the billing day, when the subscription has a problem, and 1 day before the Claude Code login expires (**Settings > Menu Bar > Expiry reminders**). If notifications for the app are off in System Settings, Settings says so and opens the right page for you.
 
 </details>
 

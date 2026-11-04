@@ -182,6 +182,21 @@ enum ExitDisplay: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// 面板标题旁订阅还剩几天什么时候显示
+enum SubscriptionDisplay: String, CaseIterable, Identifiable, Codable {
+    case always
+    /// 只在还剩 3 天以内，或者官方显示扣款失败、订阅失效时显示
+    case issues
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .always: L10n.tNow("始终", "Always")
+        case .issues: L10n.tNow("异常时", "On issues")
+        }
+    }
+}
+
 /// 面板里可以收起的区块
 enum PanelSection {
     case limits, speed, spend
@@ -220,7 +235,14 @@ final class Preferences {
 
     /// 最近一次从服务端识别到的套餐（启动后、首次同步前用于展示）
     var plan: Plan? { didSet { save(plan?.rawValue, "plan") } }
-    var billingAnchorDay: Int { didSet { save(billingAnchorDay, "billingAnchorDay") } }
+    var billingAnchorDay: Int {
+        didSet {
+            save(billingAnchorDay, "billingAnchorDay")
+            if !billingDayChosen { billingDayChosen = true }
+        }
+    }
+    /// 用户选过每月扣费日。默认的 1 日不一定是真的扣费日，没选过就不显示订阅还剩几天、也不提醒
+    private(set) var billingDayChosen: Bool
     /// 上次从每周限额记下的重置时刻。还没同步过时为 nil，周期暂时按 0:00。
     var billingAnchorHour: Int? {
         didSet {
@@ -277,6 +299,10 @@ final class Preferences {
     }
     var warningThreshold: Double { didSet { save(warningThreshold, "warningThreshold") } }
     var notificationsEnabled: Bool { didSet { save(notificationsEnabled, "notificationsEnabled") } }
+    /// 订阅到期前、订阅出问题时、Claude Code 登录到期前发通知。默认开启
+    var expiryReminders: Bool { didSet { save(expiryReminders, "expiryReminders") } }
+    /// 面板标题旁订阅还剩几天。默认始终显示
+    var subscriptionDisplay: SubscriptionDisplay { didSet { save(subscriptionDisplay.rawValue, "subscriptionDisplay") } }
     /// 使用 Claude 官方用量接口（读取 Claude Code 的登录凭据）
     var officialUsageEnabled: Bool { didSet { save(officialUsageEnabled, "officialUsageEnabled") } }
     /// 官方用量和续期的出口。空字符串表示系统代理。
@@ -325,6 +351,7 @@ final class Preferences {
             d.removeObject(forKey: key)
         }
         plan = Plan(rawValue: d.string(forKey: "plan") ?? "")
+        billingDayChosen = d.object(forKey: "billingAnchorDay") != nil
         billingAnchorDay = d.object(forKey: "billingAnchorDay") as? Int ?? 1
         billingAnchorHour = d.object(forKey: "billingAnchorHour") as? Int
         billingAnchorMinute = d.object(forKey: "billingAnchorMinute") as? Int
@@ -347,6 +374,8 @@ final class Preferences {
         weeklyResetAt = (d.object(forKey: "weeklyResetAt") as? Double).map { Date(timeIntervalSince1970: $0) }
         warningThreshold = d.object(forKey: "warningThreshold") as? Double ?? 0.8
         notificationsEnabled = d.object(forKey: "notificationsEnabled") as? Bool ?? true
+        expiryReminders = d.object(forKey: "expiryReminders") as? Bool ?? true
+        subscriptionDisplay = SubscriptionDisplay(rawValue: d.string(forKey: "subscriptionDisplay") ?? "") ?? .always
         officialUsageEnabled = d.object(forKey: "officialUsageEnabled") as? Bool ?? true
         officialProxy = d.string(forKey: "officialProxy") ?? ""
         // 自动续期默认开启。1.1 之后有一版出于安全考虑统一关掉过一次，这里恢复一次，之后尊重用户自己的选择。

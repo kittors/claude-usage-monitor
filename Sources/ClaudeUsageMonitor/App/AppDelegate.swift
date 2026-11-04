@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let self else { return }
             self.menuBar?.refresh()
             self.notifier.evaluate(self.store.limitRows, prefs: self.prefs)
+            self.notifier.evaluateExpiry(store: self.store, prefs: self.prefs)
         }
         UNUserNotificationCenter.current().delegate = self
         store.start()

@@ -200,7 +200,7 @@ private struct UsagePage: View {
                 .padding(.top, 12)
 
             SettingsHeader(title: L10n.t("计费周期", "Billing period"))
-            SettingsRow(title: L10n.t("每月扣费日", "Billing day"), detail: L10n.t("当前周期 ", "Current period ") + UsageCalculator.periodRange(start: interval.start, end: interval.end, calendar: .current, locale: Localization.shared.locale)) {
+            SettingsRow(title: L10n.t("每月扣费日", "Billing day"), detail: billingDayDetail(interval)) {
                 DropdownButton(options: (1...31).map { ($0, L10n.t("每月 \($0) 日", "Day \($0)")) }, selection: $prefs.billingAnchorDay)
             }
             Hairline()
@@ -239,6 +239,16 @@ private struct UsagePage: View {
         case .failed(let message): return L10n.t("暂时无法获取（\(message)），稍后自动重试", "Unavailable (\(message)). Retrying shortly.") + (synced.map { " · \($0)" } ?? "")
         case .disabled: return L10n.t("已关闭，菜单栏与面板不显示 5 小时 / 每周用量", "Off. The menu bar and panel hide 5-hour and weekly usage.")
         }
+    }
+
+    /// 当前周期，以及扣费日还管着订阅还剩几天和到期提醒
+    private func billingDayDetail(_ interval: DateInterval) -> String {
+        let period = L10n.t("当前周期 ", "Current period ")
+            + UsageCalculator.periodRange(start: interval.start, end: interval.end, calendar: .current, locale: Localization.shared.locale)
+        let subscription = prefs.billingDayChosen
+            ? L10n.t("面板上订阅还剩几天、到期提醒都按这一天算", "The panel's days left and the reminders before the end follow this day.")
+            : L10n.t("选好后，面板显示订阅还剩几天，并在到期前提醒", "Pick it to see the days left in the panel and get reminders before the end.")
+        return period + "\n" + subscription
     }
 
     private var proxyDetail: String {
@@ -294,6 +304,9 @@ private struct MenuBarPage: View {
 
     /// 指针停在哪个数值方块上：上方的预览据此突出这一列，或预览加入它之后的样子
     @State private var hoveredItem: MenuBarItem?
+    /// 系统设置里关掉了这个 App 的通知：提醒都不会弹出，要告诉用户
+    @State private var notificationsDenied = false
+    @Environment(\.settingsVisible) private var settingsVisible
 
     /// 菜单栏上画的是 Clawd（圆环样式时换成圆环）
     private var showsMascot: Bool { prefs.menuBarIcon == .mascot && prefs.menuBarStyle != .ringPercent }
@@ -348,6 +361,32 @@ private struct MenuBarPage: View {
                         .frame(width: 34, alignment: .trailing)
                 }
             }
+            Hairline()
+            SettingsRow(
+                title: L10n.t("到期提醒", "Expiry reminders"),
+                detail: L10n.t(
+                    "订阅在扣费日前 3 天、前 1 天各提醒一次，官方显示扣款失败或订阅失效时立即提醒；Claude Code 登录到期前 1 天提醒。",
+                    "The subscription 3 days and 1 day before your billing day, and at once if the official status shows a failed payment or an ended subscription. The Claude Code login 1 day before it expires."
+                )
+            ) {
+                SwitchToggle(isOn: $prefs.expiryReminders)
+            }
+            if notificationsDenied, prefs.notificationsEnabled || prefs.expiryReminders {
+                Hairline()
+                HStack {
+                    Text(L10n.t("系统设置里关闭了这个 App 的通知，上面的提醒都不会弹出。", "Notifications for this app are off in System Settings, so these alerts won't appear."))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    QuietButton(title: L10n.t("打开通知设置", "Open Notifications"), prominent: true) { NotificationPermission.openSettings() }
+                }
+                .padding(.vertical, 11)
+            }
+        }
+        // 每次打开设置窗口都重新看一次：用户可能刚在系统设置里改过
+        .task(id: settingsVisible) {
+            notificationsDenied = await NotificationPermission.isDenied()
         }
     }
 }
@@ -369,6 +408,10 @@ private struct PanelPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsHeader(title: L10n.t("内容", "Content"))
+            SettingsRow(title: L10n.t("订阅", "Subscription"), detail: subscriptionDetail) {
+                PillSegmented(options: SubscriptionDisplay.allCases.map { ($0, $0.title) }, selection: $prefs.subscriptionDisplay)
+            }
+            Hairline()
             SettingsRow(title: L10n.t("出口", "Exit"), detail: exitDetail) {
                 PillSegmented(options: ExitDisplay.allCases.map { ($0, $0.title) }, selection: $prefs.exitDisplay)
             }
@@ -425,6 +468,13 @@ private struct PanelPage: View {
     private func sectionRow(_ section: PanelSection, title: String, selection: Binding<PanelDetail>) -> some View {
         SettingsRow(title: title, detail: Self.detail(section, selection.wrappedValue)) {
             PillSegmented(options: PanelDetail.allCases.map { ($0, $0.title) }, selection: selection)
+        }
+    }
+
+    private var subscriptionDetail: String {
+        switch prefs.subscriptionDisplay {
+        case .always: L10n.t("顶部套餐旁写本期还剩几天，按「用量 › 每月扣费日」计算", "Days left in the period beside the plan at the top, from your billing day in Usage.")
+        case .issues: L10n.t("只在还剩 3 天以内，或官方显示扣款失败、订阅失效时出现", "Only within 3 days of the end, or when the official status shows a failed payment or an ended subscription.")
         }
     }
 

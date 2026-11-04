@@ -121,6 +121,8 @@ final class UsageStore {
     private(set) var isRefreshing = false
     /// 每过一个限额的重置时间 +1：用到限额行的界面随之重算，到点的那一行归零，不用等官方同步
     private(set) var resetEpoch = 0
+    /// 本期订阅：按设置里的每月扣费日算，没选过扣费日时为 nil。只在跨天、换期、改扣费日时变化
+    private(set) var subscriptionTerm: SubscriptionTerm?
 
     @ObservationIgnored let prefs: Preferences
     @ObservationIgnored let engine = UsageEngine()
@@ -146,6 +148,7 @@ final class UsageStore {
         official.autoRenew = prefs.autoRenewLogin
         official.outboundProxy = OutboundProxy.parse(prefs.officialProxy)
         lastSeenSync = official.usage?.fetchedAt
+        updateSubscription()
         scheduleNextReset()
         NetworkPlace.shared.proxy = official.outboundProxy
         NetworkPlace.shared.onUpdate = { [weak self] in self?.exitChecked() }
@@ -280,7 +283,25 @@ final class UsageStore {
         return nil
     }
 
+    /// 按现在的时间和扣费日更新本期订阅。快到扣费日、刚进入新的一期，或者官方显示订阅有问题时，
+    /// 每小时读一次账号资料，续费成没成功能早点知道；平时 6 小时一次
+    private func updateSubscription(now: Date = Date()) {
+        var term: SubscriptionTerm?
+        if prefs.billingDayChosen {
+            let s = billingSettings()
+            term = SubscriptionTerm(
+                now: now, anchorDay: s.billingAnchorDay, hour: s.billingAnchorHour,
+                minute: s.billingAnchorMinute, second: s.billingAnchorSecond, calendar: .current
+            )
+        }
+        if term != subscriptionTerm { subscriptionTerm = term }
+        let nearRenewal = term.map { $0.isEnding || $0.justStarted(at: now) } ?? false
+        let troubled = official.subscriptionHealth.map { $0 != .active } ?? false
+        official.profileInterval = (nearRenewal || troubled) ? 3600 : 6 * 3600
+    }
+
     func recompute(pulse: Bool = false) {
+        updateSubscription()
         let settings = billingSettings()
         computedReading = settings.weeklyReading
         engine.compute(settings: settings, now: Date()) { [weak self] snap, files in
@@ -320,6 +341,8 @@ final class UsageStore {
             if let minute = parts.minute, prefs.billingAnchorMinute != minute { prefs.billingAnchorMinute = minute }
             if let second = parts.second, prefs.billingAnchorSecond != second { prefs.billingAnchorSecond = second }
         }
+        // 扣费日的时刻跟着每周重置时刻；订阅状态变了，读账号资料的间隔也跟着变
+        updateSubscription()
         // 预计按每周限额封顶：读数变了（新的一次同步、关掉官方用量）就重算。还没算出过本机用量时，第一次计算会带上它
         if snapshot != nil, weeklyReading != computedReading { recompute() }
         scheduleNextReset()

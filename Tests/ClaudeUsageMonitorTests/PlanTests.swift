@@ -36,6 +36,41 @@ import UsageCore
     #expect(AccountProfile.decode(Data("invalid".utf8)) == nil)
 }
 
+@Test func profileReadsTheSubscriptionStatus() throws {
+    // 和 2026-11 官方响应同样的结构（数值是编的）
+    let active = try #require(AccountProfile.decode(Data("""
+    {"account":{"has_claude_max":true},"organization":{"organization_type":"claude_max",
+    "rate_limit_tier":"default_claude_max_20x","billing_type":"stripe_subscription",
+    "subscription_created_at":"2026-01-02T03:04:05.000000Z","subscription_status":"active",
+    "payment_auth_hosted_invoice_url":null}}
+    """.utf8)))
+    #expect(active.plan == .ultra)
+    #expect(active.subscriptionStatus == "active")
+    #expect(active.paymentActionURL == nil)
+    #expect(active.health == .active)
+
+    let unpaid = try #require(AccountProfile.decode(Data("""
+    {"organization":{"organization_type":"claude_pro","subscription_status":"past_due",
+    "payment_auth_hosted_invoice_url":"https://invoice.stripe.com/i/example"}}
+    """.utf8)))
+    #expect(unpaid.paymentActionURL?.host == "invoice.stripe.com")
+    #expect(unpaid.health == .actionRequired)
+
+    let failed = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_max","subscription_status":"past_due","payment_auth_hosted_invoice_url":""}}"#.utf8)))
+    #expect(failed.paymentActionURL == nil)
+    #expect(failed.health == .paymentFailed)
+
+    // 订阅结束后没有状态，也认不出付费套餐
+    let ended = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_free"}}"#.utf8)))
+    #expect(ended.plan == nil)
+    #expect(ended.health == .inactive)
+
+    // 只有旧字段：照旧认出套餐，订阅状态不下结论
+    let legacy = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_team"}}"#.utf8)))
+    #expect(legacy.plan == .team)
+    #expect(legacy.health == nil)
+}
+
 @Test @MainActor func missingFiveHourLimitDoesNotCreateAnIdleLimit() throws {
     // Synthetic usage response: Ultra can have weekly limits without a 5-hour limit.
     for fiveHour in ["", #""five_hour":null,"#] {

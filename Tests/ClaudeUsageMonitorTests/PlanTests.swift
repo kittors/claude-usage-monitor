@@ -60,15 +60,24 @@ import UsageCore
     #expect(failed.paymentActionURL == nil)
     #expect(failed.health == .paymentFailed)
 
-    // 订阅结束后没有状态，也认不出付费套餐
-    let ended = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_free"}}"#.utf8)))
+    // 资料里还有 Max，付款记录却停在 canceled（例如改从 App Store 订阅）：订阅还在
+    let elsewhere = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_5x","billing_type":"apple_subscription","subscription_status":"canceled"}}"#.utf8)))
+    #expect(elsewhere.plan == .max)
+    #expect(elsewhere.health == .active)
+
+    // 订阅结束后：认不出付费套餐，状态也是结束的
+    let ended = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_free","subscription_status":"canceled"}}"#.utf8)))
     #expect(ended.plan == nil)
     #expect(ended.health == .inactive)
 
-    // 只有旧字段：照旧认出套餐，订阅状态不下结论
+    // 认不出套餐，也没有状态：不下结论，不说订阅结束了
+    let unrecognized = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_free"}}"#.utf8)))
+    #expect(unrecognized.health == nil)
+
+    // 只有旧字段：照旧认出套餐，套餐还在，订阅就还在
     let legacy = try #require(AccountProfile.decode(Data(#"{"organization":{"organization_type":"claude_team"}}"#.utf8)))
     #expect(legacy.plan == .team)
-    #expect(legacy.health == nil)
+    #expect(legacy.health == .active)
 }
 
 @Test @MainActor func missingFiveHourLimitDoesNotCreateAnIdleLimit() throws {

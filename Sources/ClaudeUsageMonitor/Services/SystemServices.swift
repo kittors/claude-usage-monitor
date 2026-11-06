@@ -58,7 +58,7 @@ final class Notifier {
     /// 已经发过的到期提醒，和用量预警分开记：用量预警记得很快，混在一起会把这里挤掉、同一件事又提醒一遍
     private var expiryNotified = UserDefaults.standard.stringArray(forKey: "notifiedExpiry") ?? []
 
-    /// 订阅到期前 3 天、1 天各提醒一次；官方显示扣款失败、付款要验证、订阅失效时提醒一次（恢复正常后再出问题会再提醒）；
+    /// 订阅到期前 3 天、1 天各提醒一次；官方显示扣款失败、付款要验证、订阅结束时提醒一次（恢复正常后再出问题会再提醒）；
     /// Claude Code 登录到期前 1 天提醒一次
     func evaluateExpiry(store: UsageStore, prefs: Preferences, now: Date = Date()) {
         guard prefs.expiryReminders, center != nil else { return }
@@ -114,7 +114,7 @@ final class Notifier {
             (L10n.t("\(plan.title) 订阅付款需要验证", "\(plan.title) payment needs confirming"),
              L10n.t("续费付款需要验证，请到 claude.ai 的「设置 › 账单」完成付款。", "The renewal payment needs confirming. Finish it in Settings > Billing on claude.ai."))
         case .inactive, .active:
-            (L10n.t("\(plan.title) 订阅已失效", "\(plan.title) subscription has ended"),
+            (L10n.t("\(plan.title) 订阅已结束", "\(plan.title) subscription has ended"),
              L10n.t("官方账号资料显示订阅已经结束，可以在 claude.ai 重新订阅。", "Your official account profile shows the subscription has ended. You can subscribe again on claude.ai."))
         }
     }

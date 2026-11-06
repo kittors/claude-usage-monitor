@@ -37,25 +37,35 @@ private let noReminder: Int? = nil
     #expect(health("past_due") == paymentFailed)
     #expect(health("PAST_DUE") == paymentFailed)
     for ended in ["canceled", "cancelled", "unpaid", "incomplete", "incomplete_expired", "paused"] {
-        let result = health(ended)
+        let result = health(ended, plan: false)
         #expect(result == inactive, "\(ended)")
+    }
+}
+
+@Test func aPaidPlanKeepsTheSubscriptionActive() {
+    // 资料里还有付费套餐，付款记录却停在结束的状态（例如改从 App Store 订阅）：订阅还在，不报结束
+    for ended in ["canceled", "unpaid", "incomplete_expired", "paused"] {
+        let result = health(ended)
+        #expect(result == active, "\(ended)")
     }
 }
 
 @Test func paymentNeedingConfirmationOutranksPastDue() {
     #expect(health("past_due", action: true) == actionRequired)
     #expect(health("active", action: true) == actionRequired)
-    // 已经结束的订阅不再要求付款
-    #expect(health("canceled", action: true) == inactive)
+    // 已经结束的付款记录不再要求付款
+    #expect(health("canceled", action: true) == active)
+    #expect(health("canceled", action: true, plan: false) == inactive)
 }
 
-@Test func missingStatusOnlyMeansEndedWithoutAPlan() {
-    // 组织付费的套餐（Team、Enterprise）可能没有订阅状态：不下结论
-    #expect(health(nil) == unknown)
-    #expect(health(nil, plan: false) == inactive)
-    #expect(health("", plan: false) == inactive)
-    // 认不出的新状态不报警
-    #expect(health("some_new_state") == unknown)
+@Test func missingStatusNeverMeansEnded() {
+    // 组织付费的套餐（Team、Enterprise）可能没有订阅状态：套餐还在，订阅就还在
+    #expect(health(nil) == active)
+    #expect(health("some_new_state") == active)
+    // 认不出套餐不等于没有套餐：状态也说明不了什么时不下结论
+    #expect(health(nil, plan: false) == unknown)
+    #expect(health("", plan: false) == unknown)
+    #expect(health("some_new_state", plan: false) == unknown)
 }
 
 // MARK: - 本期还剩几天

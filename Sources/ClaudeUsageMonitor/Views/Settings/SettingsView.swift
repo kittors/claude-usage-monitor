@@ -365,7 +365,7 @@ private struct MenuBarPage: View {
             SettingsRow(
                 title: L10n.t("到期提醒", "Expiry reminders"),
                 detail: L10n.t(
-                    "订阅在扣费日前 3 天、前 1 天各提醒一次，官方显示扣款失败或订阅失效时立即提醒；Claude Code 登录到期前 1 天提醒。",
+                    "订阅在扣费日前 3 天、前 1 天各提醒一次，官方显示扣款失败或订阅结束时立即提醒；Claude Code 登录到期前 1 天提醒。",
                     "The subscription 3 days and 1 day before your billing day, and at once if the official status shows a failed payment or an ended subscription. The Claude Code login 1 day before it expires."
                 )
             ) {
@@ -474,7 +474,7 @@ private struct PanelPage: View {
     private var subscriptionDetail: String {
         switch prefs.subscriptionDisplay {
         case .always: L10n.t("顶部套餐旁写本期还剩几天，按「用量 › 每月扣费日」计算", "Days left in the period beside the plan at the top, from your billing day in Usage.")
-        case .issues: L10n.t("只在还剩 3 天以内，或官方显示扣款失败、订阅失效时出现", "Only within 3 days of the end, or when the official status shows a failed payment or an ended subscription.")
+        case .issues: L10n.t("只在还剩 3 天以内，或官方显示扣款失败、订阅结束时出现", "Only within 3 days of the end, or when the official status shows a failed payment or an ended subscription.")
         }
     }
 

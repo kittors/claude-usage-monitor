@@ -185,7 +185,7 @@ enum ExitDisplay: String, CaseIterable, Identifiable, Codable {
 /// 面板标题旁订阅还剩几天什么时候显示
 enum SubscriptionDisplay: String, CaseIterable, Identifiable, Codable {
     case always
-    /// 只在还剩 3 天以内，或者官方显示扣款失败、订阅失效时显示
+    /// 只在还剩 3 天以内，或者官方显示扣款失败、订阅结束时显示
     case issues
     var id: String { rawValue }
 

@@ -490,7 +490,7 @@ private struct PlanBadge: View {
         switch health {
         case .paymentFailed: L10n.t("扣款失败", "Payment failed")
         case .actionRequired: L10n.t("付款待验证", "Confirm payment")
-        case .inactive: L10n.t("订阅已失效", "Ended")
+        case .inactive: L10n.t("订阅已结束", "Ended")
         case .active: L10n.t("正常", "Active")
         }
     }

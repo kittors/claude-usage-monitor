@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-10
+
 ### Fixed
 
 - The plan badge no longer says the subscription has ended while your account profile still shows a paid plan, even if its subscription status reads canceled. As in Claude Code, the subscription counts as active while the profile shows a paid plan. It shows as ended only when the plan is gone and the status says it has ended too, and a plan the app doesn't recognize, with no status, no longer counts as ended.

@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-11-11
+
+### Fixed
+
+- Official usage no longer gets stuck on "Too many requests" during long Claude Code sessions. Claude's usage endpoint shares one small allowance across every client on your account, including Claude Code's own /usage, and refills it slowly. The old pace of up to one check every 5 minutes could use it up after several hours of heavy use, and the app then sat out 429s for most of an hour. The app now checks at most once every 20 minutes on average, with a few in a row after a quiet spell and one always kept for Refresh. If Claude still rate limits it, it waits 15 minutes before asking again, doubling up to an hour while that continues, then checks at half the pace or slower and returns to the usual pace over the next several hours. The wait carries over when the app restarts.
+- The limits no longer sit on old numbers while Claude Code has newer ones. Claude Code saves the last official usage it read in its settings file, and the app now picks up newer numbers for the same account from there without sending a request, including while it waits out a rate limit. When Claude Code checked within the last minute, the app uses those numbers instead of checking again. Point at the sync status to see when the numbers came from Claude Code.
+- The status now says "Rate limited by Claude" with the time until the next automatic check, instead of "Too many requests", and its tooltip explains that the allowance is shared with Claude Code.
+
 ## [1.7.1] - 2026-11-10
 
 ### Fixed

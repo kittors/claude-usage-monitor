@@ -307,7 +307,8 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     let small = try #require(allowance(WeeklyReading(utilization: 9, at: sync)))
     #expect(!small.borrowed)
     #expect(small.utilization == 9)
-    let earlier = AllowanceBasis(utilization: 63, syncedCost: 2013, at: date("2026-10-15 12:00"))
+    // 之前那周一整份约 $651，和本周 9%（$600～$667）对得上
+    let earlier = AllowanceBasis(utilization: 63, syncedCost: 410, at: date("2026-10-15 12:00"))
     let borrowed = try #require(allowance(WeeklyReading(utilization: 9, at: sync), earlier: earlier))
     #expect(borrowed.borrowed)
     #expect(borrowed.syncedAt == earlier.at)
@@ -319,6 +320,145 @@ private func record(_ t: Double, output: UInt32 = 1_000_000) -> UsageRecord {
     #expect(allowance(WeeklyReading(utilization: 90, at: date("2026-10-17 21:30"))) == nil)
     #expect(allowance(nil) == nil)
     #expect(allowance(nil, earlier: earlier)?.borrowed == true)
+}
+
+// MARK: - 官方中途重置每周限额
+
+/// 每条 $20。本周（10-17 22:00 起）重置前 4 条，12:00 时官方 80%（一整份额度 = $100）；
+/// 13:00 前后官方重置，之后 13:30、14:00 各一条，14:30 时官方 40%；第二天 10:00、16:00 各一条
+private let resetWeekEnd = date("2026-10-24 22:00")
+private let highReading = WeeklyReading(utilization: 80, at: date("2026-10-20 12:00"))
+private let lowReading = WeeklyReading(utilization: 40, at: date("2026-10-20 14:30"))
+private let resetIndex = IndexSnapshot(
+    records: ["2026-10-18 10:00", "2026-10-19 10:00", "2026-10-20 10:00", "2026-10-20 11:00",
+              "2026-10-20 13:30", "2026-10-20 14:00", "2026-10-21 10:00", "2026-10-21 16:00"]
+        .map { record(date($0).timeIntervalSince1970) },
+    models: ["claude-opus-5-5"]
+)
+
+private func resetSnapshot(_ reading: WeeklyReading?, earlier: AllowanceBasis? = nil, reset: MidweekReset? = nil,
+                           now: Date = date("2026-10-21 17:00")) -> UsageSnapshot {
+    let settings = UsageSettings(weeklyReset: resetWeekEnd, weeklyReading: reading, earlierAllowance: earlier,
+                                 midweekReset: reset, calendar: shanghai)
+    return UsageCalculator.snapshot(of: resetIndex, settings: settings, now: now)
+}
+
+@Test func midweekResetIsADropWithinTheSameWeek() throws {
+    let reset = try #require(MidweekReset.between(highReading, weekEnd: resetWeekEnd, and: lowReading, weekEnd: resetWeekEnd))
+    #expect(reset.before == highReading)
+    #expect(reset.after == lowReading)
+    // 每周重置时间只差零点几秒（官方返回的时间带小数）也是同一周
+    let jittered = resetWeekEnd.addingTimeInterval(0.7)
+    #expect(MidweekReset.between(highReading, weekEnd: resetWeekEnd, and: lowReading, weekEnd: jittered) != nil)
+    // 新的一周从 0% 开始，不算中途重置
+    let nextWeek = resetWeekEnd.addingTimeInterval(7 * 86_400)
+    #expect(MidweekReset.between(highReading, weekEnd: resetWeekEnd, and: lowReading, weekEnd: nextWeek) == nil)
+    // 只低了几个百分点（官方修正、取整）不算；先后颠倒也不算
+    let slightly = WeeklyReading(utilization: 76, at: lowReading.at)
+    #expect(MidweekReset.between(highReading, weekEnd: resetWeekEnd, and: slightly, weekEnd: resetWeekEnd) == nil)
+    #expect(MidweekReset.between(lowReading, weekEnd: resetWeekEnd, and: highReading, weekEnd: resetWeekEnd) == nil)
+    // 存进偏好再读回来
+    let data = try JSONEncoder().encode(reset)
+    #expect(try JSONDecoder().decode(MidweekReset.self, from: data) == reset)
+}
+
+@Test func midweekResetCountsOnlyTheCostAfterIt() throws {
+    let reset = MidweekReset(before: highReading, after: lowReading, weekEnd: resetWeekEnd)
+    let snap = resetSnapshot(WeeklyReading(utilization: 60, at: date("2026-10-21 12:00")), reset: reset)
+    let a = try #require(snap.weeklyAllowance)
+    // 重置后 40% 按重置前的比例是 $40：从 14:30 往前数够 $40 的是 13:30 那条
+    #expect(a.restartedAt == date("2026-10-20 13:30"))
+    #expect(a.reset == reset)
+    #expect(abs(a.forgiven - 80) < 1e-9)
+    // 重置后到第二天 12:00 花了 $60，对应 60%：一整份还是 $100
+    #expect(abs(a.syncedCost - 60) < 1e-9)
+    #expect(abs(a.full - 100) < 1e-9)
+    // 重置后一共花了 $80，还剩 $20；本周用满时一共 $80 + $100
+    #expect(abs(a.spent - 80) < 1e-9)
+    #expect(abs(a.remaining - 20) < 1e-9)
+    #expect(abs(a.fullWeek - 180) < 1e-9)
+    let week = try #require(snap.week)
+    #expect(abs(week.cost - 160) < 1e-9)
+    #expect(week.projection(now: date("2026-10-21 17:00"), allowance: a) == Projection(cost: 180))
+
+    // 不知道重置过时，整周的 $140 对应 60%，一整份被算成 $233
+    let naive = try #require(resetSnapshot(WeeklyReading(utilization: 60, at: date("2026-10-21 12:00"))).weeklyAllowance)
+    #expect(naive.full > 230)
+}
+
+@Test func midweekResetFromTheBorrowedBasisOfTheSameWeek() throws {
+    // 升级前就重置了：没记下重置，但借用的比例是本周 12:00 的 80%，比现在的 40% 高出一截
+    let earlier = AllowanceBasis(utilization: 80, syncedCost: 80, at: highReading.at)
+    let snap = resetSnapshot(lowReading, earlier: earlier)
+    let a = try #require(snap.weeklyAllowance)
+    #expect(a.reset == MidweekReset(before: highReading, after: lowReading, weekEnd: resetWeekEnd))
+    #expect(a.restartedAt == date("2026-10-20 13:30"))
+    #expect(!a.borrowed)
+    #expect(abs(a.full - 100) < 1e-9)
+    // 本周一共 $160，重置前的 $80 不算
+    #expect(abs(a.spent - 80) < 1e-9)
+
+    // 借用的比例来自上一周：不是中途重置
+    let small = WeeklyReading(utilization: 5, at: lowReading.at)
+    let lastWeek = AllowanceBasis(utilization: 80, syncedCost: 80, at: date("2026-10-16 12:00"))
+    let plain = try #require(resetSnapshot(small, earlier: lastWeek).weeklyAllowance)
+    #expect(plain.reset == nil)
+    #expect(plain.forgiven == 0)
+}
+
+@Test func midweekResetWhileBorrowingKeepsOnlyTheLaterCost() throws {
+    // 记下的重置：重置后 5%，按重置前的比例是 $5，往前数到 14:00 那条
+    let reset = MidweekReset(before: highReading, after: WeeklyReading(utilization: 5, at: lowReading.at), weekEnd: resetWeekEnd)
+    // 重置后百分比还小：借用之前那周对得上的比例（一整份 $360），只有重置后的消耗占额度
+    let lastWeek = AllowanceBasis(utilization: 50, syncedCost: 180, at: date("2026-10-16 12:00"))
+    let a = try #require(resetSnapshot(reset.after, earlier: lastWeek, reset: reset).weeklyAllowance)
+    #expect(a.borrowed)
+    #expect(a.restartedAt == date("2026-10-20 14:00"))
+    #expect(abs(a.full - 360) < 1e-9)
+    #expect(abs(a.forgiven - 100) < 1e-9)
+    #expect(abs(a.spent - 60) < 1e-9)
+    #expect(abs(a.fullWeek - 460) < 1e-9)
+}
+
+@Test func aBorrowedRatioThatContradictsThisWeekIsDropped() throws {
+    // 本周 2%、花了 $40：一整份在 $1,333～$2,000 之间
+    let index = IndexSnapshot(records: [record(date("2026-10-18 10:00").timeIntervalSince1970), record(date("2026-10-18 11:00").timeIntervalSince1970)],
+                              models: ["claude-opus-5-5"])
+    func allowance(earlier: AllowanceBasis) -> WeeklyAllowance? {
+        let settings = UsageSettings(weeklyReset: resetWeekEnd, weeklyReading: WeeklyReading(utilization: 2, at: date("2026-10-18 12:00")),
+                                     earlierAllowance: earlier, calendar: shanghai)
+        return UsageCalculator.snapshot(of: index, settings: settings, now: date("2026-10-18 13:00")).weeklyAllowance
+    }
+    // 上周按没认出的中途重置、拿整周消耗算的比例：10% 对应 $3,500，一整份 $35,000，差了十几倍，不借用
+    let inflated = try #require(allowance(earlier: AllowanceBasis(utilization: 10, syncedCost: 3500, at: date("2026-10-16 12:00"))))
+    #expect(!inflated.borrowed)
+    #expect(inflated.utilization == 2)
+    #expect(abs(inflated.full - 2000) < 1e-9)
+    // 对得上的照常借用：一整份 $1,800
+    let fine = try #require(allowance(earlier: AllowanceBasis(utilization: 50, syncedCost: 900, at: date("2026-10-16 12:00"))))
+    #expect(fine.borrowed)
+    #expect(abs(fine.full - 1800) < 1e-9)
+}
+
+@Test func restartTimeStaysBetweenTheTwoReadings() throws {
+    let week = try #require(resetSnapshot(nil).week)
+    let records = resetIndex.records
+    let costs = records.map { _ in 20.0 }
+    func restart(after: WeeklyReading, before: WeeklyReading = highReading) -> Date {
+        UsageCalculator.restartTime(MidweekReset(before: before, after: after, weekEnd: resetWeekEnd), records: records, costs: costs, week: week)
+    }
+    // 重置后还是 0%：取重置后那次读数
+    #expect(restart(after: WeeklyReading(utilization: 0, at: lowReading.at)) == lowReading.at)
+    // 重置后的百分比比两次读数之间的消耗还多：不早于重置前那次读数
+    #expect(restart(after: WeeklyReading(utilization: 75, at: lowReading.at)) == highReading.at)
+    // 重置前本周还没有消耗，比例算不出来
+    let early = WeeklyReading(utilization: 80, at: date("2026-10-18 09:00"))
+    #expect(restart(after: lowReading, before: early) == lowReading.at)
+    // 不是这一周的重置不用
+    let other = MidweekReset(before: highReading, after: lowReading, weekEnd: resetWeekEnd.addingTimeInterval(-7 * 86_400))
+    let a = try #require(resetSnapshot(WeeklyReading(utilization: 60, at: date("2026-10-21 12:00")), reset: other).weeklyAllowance)
+    #expect(a.reset == nil)
+    #expect(a.restartedAt == nil)
 }
 
 @Test func snapshotCoversBillingPeriodAndDays() {

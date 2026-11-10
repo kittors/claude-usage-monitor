@@ -148,6 +148,7 @@ final class UsageStore {
         official.autoRenew = prefs.autoRenewLogin
         official.outboundProxy = OutboundProxy.parse(prefs.officialProxy)
         lastSeenSync = official.usage?.fetchedAt
+        noteWeeklyReading()
         updateSubscription()
         scheduleNextReset()
         NetworkPlace.shared.proxy = official.outboundProxy
@@ -261,6 +262,7 @@ final class UsageStore {
         var settings = prefs.usageSettings
         settings.weeklyReading = weeklyReading
         settings.earlierAllowance = prefs.allowanceBasis
+        settings.midweekReset = prefs.midweekReset
         if let reset = official.usage?.fiveHour?.resetsAt, reset > Date() { settings.fiveHourReset = reset }
         if let reset = official.usage?.weeklyReset() ?? prefs.weeklyResetAt {
             settings.weeklyReset = reset
@@ -339,6 +341,7 @@ final class UsageStore {
             }
             lastSeenSync = fetched
             requestCost = nil
+            noteWeeklyReading()
         }
         if let plan = official.detectedPlan, plan != prefs.plan { prefs.plan = plan }
         // 记下每周限额的重置时刻，下次启动、还没同步完时周期也不会退回 0:00
@@ -359,9 +362,24 @@ final class UsageStore {
 
     /// 上次重算时用的每周限额读数
     @ObservationIgnored private var computedReading: WeeklyReading?
+    /// 上一次看到的官方本周读数，和那一周的重置时间（启动时是上次存下的官方数据）
+    @ObservationIgnored private var lastWeekly: (reading: WeeklyReading, weekEnd: Date)?
 
-    /// 本周的百分比够大、额度折算准了：记下来，之后某一周开头百分比还小时，预计先借用它
+    /// 新的官方读数比同一周上一次的低了一截：官方中途重置了每周限额，记下来，折算额度时重置之前的消耗不算
+    private func noteWeeklyReading() {
+        guard let usage = official.usage, let week = usage.sevenDay, let end = week.resetsAt else { return }
+        let reading = WeeklyReading(utilization: Double(week.percent), at: usage.fetchedAt)
+        if let last = lastWeekly,
+           let reset = MidweekReset.between(last.reading, weekEnd: last.weekEnd, and: reading, weekEnd: end) {
+            prefs.midweekReset = reset
+        }
+        lastWeekly = (reading, end)
+    }
+
+    /// 本周的百分比够大、额度折算准了：记下来，之后某一周开头百分比还小时，预计先借用它。
+    /// 算的时候认出了中途重置（升级之前就重置了的那一周）也记下来：本周的比例之后被新的读数覆盖，也还知道之前的消耗不算
     private func rememberAllowance(_ snap: UsageSnapshot?) {
+        if let reset = snap?.weeklyAllowance?.reset, prefs.midweekReset != reset { prefs.midweekReset = reset }
         guard let a = snap?.weeklyAllowance, !a.borrowed, a.utilization >= WeeklyAllowance.minimumUtilization,
               let at = a.syncedAt else { return }
         let basis = AllowanceBasis(utilization: a.utilization, syncedCost: a.syncedCost, at: at)
@@ -638,7 +656,8 @@ final class UsageStore {
                 windows.append(.init(cost: 0, percent: 0))
             }
         }
-        if let week = usage.sevenDay, let cost = snapshot.week?.cost {
+        // 官方中途重置过时，只有重置之后的消耗对应现在的百分比
+        if let week = usage.sevenDay, let cost = snapshot.weeklyAllowance?.spent ?? snapshot.week?.cost {
             // 到了重置时间、还没同步：本周已经切到新的一周，从 0% 算起
             let current = week.resetsAt.map { $0 > now } ?? true
             windows.append(.init(cost: atSync(cost), percent: current ? week.percent : 0))

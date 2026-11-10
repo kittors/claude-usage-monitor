@@ -342,6 +342,10 @@ final class Preferences {
     var allowanceBasis: AllowanceBasis? {
         didSet { save(allowanceBasis.flatMap { try? JSONEncoder().encode($0) }, "allowanceBasis") }
     }
+    /// 官方最近一次在一周中途重置每周限额：折算这一周的额度时，重置之前的消耗不算
+    var midweekReset: MidweekReset? {
+        didSet { save(midweekReset.flatMap { try? JSONEncoder().encode($0) }, "midweekReset") }
+    }
 
     private init() {
         let d = UserDefaults.standard
@@ -405,6 +409,7 @@ final class Preferences {
         speedCollapsed = d.bool(forKey: "speedCollapsed")
         spendCollapsed = d.bool(forKey: "spendCollapsed")
         allowanceBasis = d.data(forKey: "allowanceBasis").flatMap { try? JSONDecoder().decode(AllowanceBasis.self, from: $0) }
+        midweekReset = d.data(forKey: "midweekReset").flatMap { try? JSONDecoder().decode(MidweekReset.self, from: $0) }
     }
 
     private func save(_ value: Any?, _ key: String) {

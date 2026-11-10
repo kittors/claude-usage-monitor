@@ -48,7 +48,7 @@ private func sync(
     #expect(sync(.tick, activity(consumedAgo: 1, unsynced: 5)))
     // 以前攒满 $0.5 就查：现在一格之内都不查，省下的就是被限流的那些请求
     #expect(!sync(.tick, activity(consumedAgo: 1, unsynced: 0.5), requestedAgo: 600))
-    // 一直在消耗但攒不够一格：最长 15 分钟也查一次，校正其他设备的用量和推算偏差
+    // 一直在消耗但攒不够一格：最长 20 分钟也查一次，校正其他设备的用量和推算偏差
     #expect(!sync(.tick, activity(consumedAgo: 1, unsynced: 0.5), requestedAgo: AutoSyncPolicy.longestWait - 1))
     #expect(sync(.tick, activity(consumedAgo: 1, unsynced: 0.5), requestedAgo: AutoSyncPolicy.longestWait))
 }
@@ -149,33 +149,121 @@ private func sync(
     budget.spend(at: now)
     #expect(!budget.allows(manual: true, at: now))
 
-    // 每 5 分钟攒回一次；自动查询要攒到两次（花一次、留一次）
+    // 每 20 分钟攒回一次；自动查询要攒到两次（花一次、留一次）
+    #expect(RequestBudget.refillInterval == 20 * 60)
     #expect(budget.wait(manual: true, at: now) == RequestBudget.refillInterval)
     #expect(budget.wait(manual: false, at: now) == 2 * RequestBudget.refillInterval)
     let later = now.addingTimeInterval(2 * RequestBudget.refillInterval)
     #expect(budget.allows(manual: false, at: later))
-
-    // 一小时内自动查询最多：先用掉攒下的 4 次，之后每 5 分钟 1 次
-    var hour = RequestBudget()
-    var sent = 0
-    for second in stride(from: 0.0, to: 3600, by: 2) {
-        let t = now.addingTimeInterval(second)
-        if hour.allows(manual: false, at: t) { hour.spend(at: t); sent += 1 }
-    }
-    #expect(sent <= 4 + 12)
 }
 
-@Test func budgetRefillsUpToCapacityAndDrainsOnRateLimit() {
-    var budget = RequestBudget(tokens: 0, updatedAt: now)
-    #expect(budget.available(at: now.addingTimeInterval(3600)) == RequestBudget.capacity)
+@Test func budgetStaysUnderWhatTheServerSustains() {
+    // 1.7.1 的用户日志：5.7 小时里查了 31 次就被限流（推算服务器每小时只回补 3 次左右）。
+    // 现在先用掉攒下的 4 次，之后每 20 分钟 1 次：6 小时也到不了那么多
+    var budget = RequestBudget()
+    var sent = 0
+    for second in stride(from: 0.0, to: 6 * 3600, by: 2) {
+        let t = now.addingTimeInterval(second)
+        if budget.allows(manual: false, at: t) { budget.spend(at: t); sent += 1 }
+    }
+    #expect(sent <= 4 + 6 * 3)
+    #expect(sent < 31)
+}
+
+@Test func budgetRefillsUpToCapacity() {
+    let budget = RequestBudget(tokens: 0, updatedAt: now)
+    #expect(budget.available(at: now.addingTimeInterval(6 * 3600)) == RequestBudget.capacity)
     // 系统时间往回调：不倒扣，也不凭空多出来
     #expect(budget.available(at: now.addingTimeInterval(-3600)) == 0)
-    // 服务器已经限流：清零重新攒
+}
+
+@Test func rateLimitCoolsDownThenRefillsSlower() {
+    let step = RequestBudget.refillInterval
+    var budget = RequestBudget()
+    budget.spend(at: now)
+    // 实测限流时 Retry-After 是 0：按冷却时间算，先停 15 分钟；剩下的次数只留一次
+    budget.rateLimited(retryAfter: 0, at: now)
+    #expect(budget.streak == 1)
+    #expect(budget.cooldown(at: now) == 15 * 60)
+    #expect(budget.available(at: now) == 1)
+    #expect(!budget.allows(manual: true, at: now.addingTimeInterval(14 * 60)))
+    // 冷却一过就能手动再试
+    #expect(budget.allows(manual: true, at: now.addingTimeInterval(15 * 60)))
+    // 之后攒得慢一倍：自动查询（还要给手动留一次）要等攒回一次，也就是两格时间
+    #expect(budget.slowdown(at: now) == 2)
+    #expect(budget.wait(manual: false, at: now) == 2 * step)
+    let retry = now.addingTimeInterval(2 * step)
+    #expect(budget.allows(manual: false, at: retry))
+
+    // 自动重试又被拒：冷却翻倍；放慢不再叠加（额度还没恢复，不说明平时查得太勤）
+    budget.spend(at: retry)
+    budget.rateLimited(retryAfter: nil, at: retry)
+    #expect(budget.streak == 2)
+    #expect(budget.cooldown(at: retry) == 30 * 60)
+    let recovered: Double = 1 + pow(0.5, 2 * step / RequestBudget.recoveryHalfLife)
+    let slower: Double = budget.slowdown(at: retry)
+    #expect(abs(slower - recovered) < 1e-9)
+
+    // 冷却最长 1 小时
+    var t = retry
+    for _ in 0..<4 {
+        t = t.addingTimeInterval(3 * 3600)
+        budget.rateLimited(retryAfter: nil, at: t)
+    }
+    #expect(budget.cooldown(at: t) == RequestBudget.longestCooldown)
+
+    // 成功一次就不再算连着被限流：下一次又从 15 分钟起，并且再放慢一倍，最多 4 倍
+    budget.succeeded()
+    #expect(budget.streak == 0)
+    for _ in 0..<3 {
+        t = t.addingTimeInterval(60)
+        budget.rateLimited(retryAfter: nil, at: t)
+        #expect(budget.cooldown(at: t) == 15 * 60)
+        budget.succeeded()
+    }
+    #expect(budget.slowdown(at: t) == RequestBudget.maximumSlowdown)
+}
+
+@Test func rateLimitHonorsRetryAfterUpToTheLongestCooldown() {
+    var budget = RequestBudget()
+    budget.rateLimited(retryAfter: 40 * 60, at: now)
+    #expect(budget.cooldown(at: now) == 40 * 60)
     budget = RequestBudget()
-    budget.drain(at: now)
-    #expect(budget.available(at: now) == 0)
-    #expect(!budget.allows(manual: true, at: now))
-    // 跨重启保留
-    let data = try? JSONEncoder().encode(budget)
-    #expect(data.flatMap { try? JSONDecoder().decode(RequestBudget.self, from: $0) } == budget)
+    budget.rateLimited(retryAfter: 24 * 3600, at: now)
+    #expect(budget.cooldown(at: now) == RequestBudget.longestCooldown)
+    // 系统时间往回调：也不会停得比最长冷却更久
+    #expect(budget.cooldown(at: now.addingTimeInterval(-24 * 3600)) == RequestBudget.longestCooldown)
+}
+
+@Test func slowdownRecoversWithoutFurtherRateLimits() {
+    var budget = RequestBudget()
+    budget.rateLimited(retryAfter: nil, at: now)
+    #expect(budget.interval(at: now) == 2 * RequestBudget.refillInterval)
+    // 放慢的部分每 6 小时恢复一半，一两天后就回到平时的节奏
+    let halfway: Double = budget.slowdown(at: now.addingTimeInterval(6 * 3600))
+    #expect(abs(halfway - 1.5) < 1e-9)
+    #expect(budget.slowdown(at: now.addingTimeInterval(48 * 3600)) < 1.01)
+    // 系统时间往回调：不算恢复
+    #expect(budget.slowdown(at: now.addingTimeInterval(-3600)) == 2)
+}
+
+@Test func budgetSurvivesRestartsAndReadsOlderVersions() throws {
+    // 跨重启保留，包括冷却和放慢的节奏
+    var budget = RequestBudget()
+    budget.spend(at: now)
+    budget.rateLimited(retryAfter: nil, at: now)
+    let data = try JSONEncoder().encode(budget)
+    #expect(try JSONDecoder().decode(RequestBudget.self, from: data) == budget)
+
+    // 1.7.1 及以前只存了这两项：按没有被限流过读
+    let legacy = try JSONEncoder().encode(LegacyBudget(tokens: 2, updatedAt: now))
+    let decoded = try JSONDecoder().decode(RequestBudget.self, from: legacy)
+    #expect(decoded == RequestBudget(tokens: 2, updatedAt: now))
+    #expect(decoded.cooldown(at: now) == 0)
+    #expect(decoded.slowdown(at: now) == 1)
+}
+
+private struct LegacyBudget: Encodable {
+    var tokens: Double
+    var updatedAt: Date
 }

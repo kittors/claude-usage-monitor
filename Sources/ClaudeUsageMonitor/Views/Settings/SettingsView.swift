@@ -159,8 +159,8 @@ private struct UsagePage: View {
                 SettingsRow(
                     title: L10n.t("查询间隔", "Interval"),
                     detail: L10n.t(
-                        "Claude Code 正在使用时，消耗的 Token 够让官方百分比涨一格才查，两次至少隔这么久。官方接口限额很紧，平均每 5 分钟最多查 1 次，免得被限流。",
-                        "While Claude Code is in use, it checks once tokens used are enough to move the official percentage by one point, and checks are at least this far apart. The official endpoint is tightly limited, so it averages at most one check every 5 minutes to avoid rate limits."
+                        "Claude Code 正在使用时，消耗的 Token 够让官方百分比涨一格才查，两次至少隔这么久。官方接口的额度由同一账号的 Claude Code 等客户端共用，所以平均每 20 分钟最多查 1 次，免得被限流。",
+                        "While Claude Code is in use, it checks once tokens used are enough to move the official percentage by one point, and checks are at least this far apart. The official endpoint's allowance is shared with Claude Code and other clients on the account, so it averages at most one check every 20 minutes to avoid rate limits."
                     )
                 ) {
                     NumberField(value: $prefs.autoSyncInterval, suffix: L10n.t("秒", "s"), width: 40)

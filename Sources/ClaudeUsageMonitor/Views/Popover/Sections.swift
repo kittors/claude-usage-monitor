@@ -36,8 +36,8 @@ struct LimitsSection: View {
         let synced = L10n.t("\(Fmt.relative(usage.fetchedAt, now: now))同步", "Synced \(Fmt.relative(usage.fetchedAt, now: now))")
         if official.state == .connected { return synced }
         var reason = Self.shortReason(official.state)
-        if official.rateLimitedUntil > now {
-            let minutes = max(1, Int((official.rateLimitedUntil.timeIntervalSince(now) / 60).rounded(.up)))
+        if let wait = official.retryWait(at: now) {
+            let minutes = max(1, Int((wait / 60).rounded(.up)))
             reason += L10n.t("，约 \(minutes) 分钟后重试", ", retry in about \(minutes) min")
         }
         return "\(synced) · \(reason)"
@@ -47,13 +47,19 @@ struct LimitsSection: View {
     private func statusTip(_ official: OfficialUsageService) -> Tip {
         var notes = [L10n.t(
             // 「/」后面加不换行的连接符，「/usage」不会断在两行
-            "来自 Claude 官方用量接口，和 Claude Code 的 /\u{2060}usage 相同。Claude Code 正在使用时，消耗够让数字变化就同步；随时可以点「立即刷新」",
-            "From the same endpoint as Claude Code /\u{2060}usage. While Claude Code is in use, it syncs once usage is enough to change the numbers. Refresh works any time."
+            "来自 Claude 官方用量接口，和 Claude Code 的 /\u{2060}usage 相同。Claude Code 正在使用时，消耗够让数字变化就同步；Claude Code 自己查到的新数字也会直接用上。随时可以点「立即刷新」",
+            "From the same endpoint as Claude Code /\u{2060}usage. While Claude Code is in use, it syncs once usage is enough to change the numbers, and picks up any newer numbers Claude Code has checked. Refresh works any time."
         )]
         if official.usage != nil, Self.staleReason(official.state) != nil {
-            notes.insert(Self.unavailableReason(official.state, fetching: official.isFetching), at: 0)
+            notes.insert(official.isRateLimited
+                ? L10n.t("官方用量接口的额度由同一账号的 Claude Code 等客户端共用，现在暂时用完了，要过一阵才恢复。这期间 Claude Code 查到新数字时，这里会直接用上。",
+                         "Claude's usage endpoint shares one allowance across the account's Claude Code clients, and it is used up for now. It takes a while to recover. If Claude Code checks usage meanwhile, its numbers show up here.")
+                : Self.unavailableReason(official.state, fetching: official.isFetching), at: 0)
         }
-        let rows = official.usage.map { [Tip.Row(L10n.t("上次同步", "Last sync"), Self.moment($0.fetchedAt))] } ?? []
+        var rows = official.usage.map { [Tip.Row(L10n.t("上次同步", "Last sync"), Self.moment($0.fetchedAt))] } ?? []
+        if official.usage != nil, official.usageFromClaudeCode {
+            rows.append(Tip.Row(L10n.t("来源", "Source"), L10n.t("Claude Code 查到的", "Checked by Claude Code")))
+        }
         return Tip(title: L10n.t("官方用量", "Official usage"), rows: rows, note: notes.joined(separator: "\n"))
     }
 

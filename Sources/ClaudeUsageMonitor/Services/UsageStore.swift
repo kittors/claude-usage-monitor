@@ -185,6 +185,8 @@ final class UsageStore {
     /// 弹窗打开时调用：默认刷新一次（「设置 › 用量 › 打开面板时刷新」可以关闭）
     func panelOpened() {
         NetworkPlace.shared.refreshIfStale()
+        // Claude Code 查到了更新的数字就先换上（只读本机文件）
+        official.checkClaudeCode()
         if prefs.refreshOnOpen {
             rescanNow()
             // 上次同步之后的消耗还不够让数字变化，再查一次没有意义；等待登录时只读本地钥匙串，照常检查
@@ -327,8 +329,14 @@ final class UsageStore {
     private func officialChanged() {
         if isRefreshing, !official.isFetching { isRefreshing = false }
         if let fetched = official.usage?.fetchedAt, fetched != lastSeenSync {
-            // 新的一次成功查询：请求发出之前的消耗都已经体现在官方数字里
-            syncedCost = requestCost ?? observedCost
+            if official.usageFromClaudeCode {
+                // Claude Code 查到的：它查询那一刻之前的消耗都已经体现在数字里，但本机不知道那一刻的累计消耗。
+                // 刚查到的按现在算；更早的不动，自动查询照常按本 App 上次同步以来的消耗判断
+                if Date().timeIntervalSince(fetched) < ClaudeCodeUsageCache.freshness { syncedCost = observedCost }
+            } else {
+                // 新的一次成功查询：请求发出之前的消耗都已经体现在官方数字里
+                syncedCost = requestCost ?? observedCost
+            }
             lastSeenSync = fetched
             requestCost = nil
         }
@@ -461,6 +469,8 @@ final class UsageStore {
                 // 时间窗口会随时间滑动；同时作为 FSEvents 的兜底
                 if Date().timeIntervalSince(self.lastScanAt) > 55 { self.scan() } else { self.recompute() }
                 ExchangeRates.shared.refreshIfStale()
+                // Claude Code 查到了更新的官方数字就换上：配置文件没变时只看一下修改时间
+                self.official.checkClaudeCode()
             }
         }
         timer.tolerance = 5

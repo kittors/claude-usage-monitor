@@ -18,7 +18,7 @@ public enum AutoSyncPolicy {
     /// 一格至少按这么多本机消耗（美元，按 API 价格折算）算：窗口刚开始、还推算不出来时用它
     public static let minimumStep: Double = 0.5
     /// 一直有新消耗时，最长这么久也查一次：其他设备上的用量、推算的偏差都靠它校正
-    public static let longestWait: TimeInterval = 15 * 60
+    public static let longestWait: TimeInterval = 20 * 60
     /// 消耗停下这么久后（Claude Code 两轮之间的停顿），攒下的消耗够三成格就补查一次
     public static let settleDelay: TimeInterval = 15
     /// 停下补查、展开面板时，攒到这么多格就值得问一次

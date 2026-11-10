@@ -36,6 +36,28 @@ import UsageCore
     #expect(AccountProfile.decode(Data("invalid".utf8)) == nil)
 }
 
+@Test func profileReadsTheAccount() throws {
+    // 用来确认 Claude Code 缓存的用量是同一个账号的（与它写进配置的 accountUuid 相同）
+    let profile = try #require(AccountProfile.decode(Data(#"{"account":{"uuid":"00000000-0000-4000-8000-000000000001","email":"someone@example.com"},"organization":{"organization_type":"claude_max"}}"#.utf8)))
+    #expect(profile.accountUUID == "00000000-0000-4000-8000-000000000001")
+    #expect(AccountProfile.decode(Data(#"{"account":{"uuid":""},"organization":{}}"#.utf8))?.accountUUID == nil)
+    #expect(AccountProfile.decode(Data(#"{"organization":{}}"#.utf8))?.accountUUID == nil)
+}
+
+@Test func rateLimitErrorsAreSummarizedForTheLog() {
+    // 官方的 JSON 错误：类型和说明
+    let json = OfficialUsageService.errorSummary(Data(#"{"type":"error","error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}"#.utf8))
+    #expect(json == "rate_limit_error: Rate limited. Please try again later.")
+    // 网关返回的网页：只取开头一小段，换行合成空格
+    let page = OfficialUsageService.errorSummary(Data("<html>\n<title>429 Too Many Requests</title>\n".utf8))
+    #expect(page == "non-JSON: <html> <title>429 Too Many Requests</title>")
+    let long = OfficialUsageService.errorSummary(Data(String(repeating: "x", count: 500).utf8))
+    let expected = "non-JSON: " + String(repeating: "x", count: 120)
+    #expect(long == expected)
+    #expect(OfficialUsageService.errorSummary(nil) == nil)
+    #expect(OfficialUsageService.errorSummary(Data()) == nil)
+}
+
 @Test func profileReadsTheSubscriptionStatus() throws {
     // 和 2026-11 官方响应同样的结构（数值是编的）
     let active = try #require(AccountProfile.decode(Data("""

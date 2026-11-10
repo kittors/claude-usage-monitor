@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-11-11
+
+### Fixed
+
+- The week's estimate and what's left are right again after Claude resets the weekly limit partway through a week. The official percentage starts again from 0 while this Mac's spending for the week keeps adding up, so once the percentage passed 10% the app worked out an allowance about ten times too large, and would have borrowed it at the start of the next week. When a reading comes back 5 points or more below an earlier one from the same week, the app now treats it as a reset and works out when it happened from the readings on either side. Only spending after the reset counts against the limit, and the week's estimate is what was spent before it plus a full allowance after it. Point at the week's amount to see how the estimate adds up, and at the line below it for when the reset happened.
+- A ratio borrowed from an earlier week is no longer used when it can't match this week's own reading, for example after a plan change, or one worked out before the app could recognize a reset. The app uses this week's reading instead.
+
 ## [1.7.2] - 2026-11-11
 
 ### Fixed

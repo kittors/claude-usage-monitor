@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-11-13
+
+### Fixed
+
+- The app now follows Claude Code when you sign in to another account. Before, the panel kept the old account's plan, subscription status and days left while the limits moved to the new account: Claude Code revokes the old login when it switches, and the app picked up the new one for the limits but read the account profile only every 6 hours. The app now reads which account Claude Code is signed in to every 30 seconds and at launch, without sending a request. When that changes, it shows the new account right away, with any numbers Claude Code has already checked for it, and checks once to confirm. Any check that finds a different login also reads the account profile, and signing out of Claude Code brings up the sign-in prompt right away. Point at the plan badge to see which account the panel shows.
+- Each account keeps its own billing day and weekly figures. The billing day in Settings > Usage belongs to the account you're signed in to, and switching back restores it. An account the app hasn't seen before shows no days left until you pick its billing day. The plan, the weekly reset time, the ratio behind the estimate and any mid-week reset are kept per account too, and so is the pace of official usage checks, so a rate limit on one account no longer holds up checks for another. Reminders about a subscription problem are tracked per account as well.
+- The week's estimate stays right when you switch accounts partway through a week. Spending on this Mac isn't tied to an account, so the old account's spending counted against the new account's allowance and could make it look several times larger. The app now notes when you switch and leaves spending on other accounts out of this account's allowance, including when you switch back and forth. Point at the week's amount to see how the estimate adds up, and at the line below it for what was spent on other accounts.
+
 ## [1.7.3] - 2026-11-11
 
 ### Fixed

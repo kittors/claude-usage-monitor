@@ -225,6 +225,24 @@ enum CostSpan: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// 收起来的另一个账号的那几项：扣费日是用户为它选的，其余是从它的官方数据记下的
+struct AccountMemory: Codable, Equatable {
+    var plan: String?
+    /// 没选过扣费日时为 nil
+    var billingAnchorDay: Int?
+    var billingAnchorHour: Int?
+    var billingAnchorMinute: Int?
+    var billingAnchorSecond: Int?
+    var weeklyResetAt: Date?
+    var allowanceBasis: AllowanceBasis?
+    var midweekReset: MidweekReset?
+    /// 收起来的时间
+    var savedAt: Date
+
+    /// 最多记几个别的账号（按最近用过的）
+    static let limit = 8
+}
+
 /// 偏好设置（`UserDefaults` 持久化）。
 @MainActor
 @Observable
@@ -233,10 +251,20 @@ final class Preferences {
 
     @ObservationIgnored private let defaults = UserDefaults.standard
 
+    /// 下面按账号记的几项（套餐、扣费日、重置时刻、额度比例、中途重置）属于哪个 Claude 账号（uuid）。还没认出过账号时为 nil
+    private(set) var account: String? { didSet { save(account, "account") } }
+    /// 本机这几天先后登录过哪些账号：每一段从 `since` 起到下一段开始为止。换过账号才有，只留最近 8 天
+    private(set) var accountSpans: [AccountSpan] {
+        didSet { save(accountSpans.isEmpty ? nil : try? JSONEncoder().encode(accountSpans), "accountSpans") }
+    }
+    /// 正在换上另一个账号的设置：这时改扣费日不算用户选的
+    @ObservationIgnored private var switchingAccount = false
+
     /// 最近一次从服务端识别到的套餐（启动后、首次同步前用于展示）
     var plan: Plan? { didSet { save(plan?.rawValue, "plan") } }
     var billingAnchorDay: Int {
         didSet {
+            guard !switchingAccount else { return }
             save(billingAnchorDay, "billingAnchorDay")
             if !billingDayChosen { billingDayChosen = true }
         }
@@ -354,6 +382,8 @@ final class Preferences {
                     "weeklyResetMinute", "weeklyStartOverride", "weeklyResetTracker", "exchangeRate"] {
             d.removeObject(forKey: key)
         }
+        account = d.string(forKey: "account")
+        accountSpans = d.data(forKey: "accountSpans").flatMap { try? JSONDecoder().decode([AccountSpan].self, from: $0) } ?? []
         plan = Plan(rawValue: d.string(forKey: "plan") ?? "")
         billingDayChosen = d.object(forKey: "billingAnchorDay") != nil
         billingAnchorDay = d.object(forKey: "billingAnchorDay") as? Int ?? 1
@@ -416,6 +446,66 @@ final class Preferences {
         if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
     }
 
+    // MARK: 按账号记的项
+
+    /// 换成某个账号。第一次认出账号时，现有的就是它的；换了账号时把现在的收起来，换上那个账号上次的（没见过的从头记），
+    /// 换回来时原样恢复。`detected` 是已经知道的新账号的套餐。返回是否真的换了
+    @discardableResult
+    func useAccount(_ id: String, plan detected: Plan?, at now: Date = Date()) -> Bool {
+        guard account != id else { return false }
+        guard let previous = account else {
+            account = id
+            return false
+        }
+        var others = Self.loadAccountMemories(defaults)
+        others[previous] = AccountMemory(
+            plan: plan?.rawValue, billingAnchorDay: billingDayChosen ? billingAnchorDay : nil,
+            billingAnchorHour: billingAnchorHour, billingAnchorMinute: billingAnchorMinute, billingAnchorSecond: billingAnchorSecond,
+            weeklyResetAt: weeklyResetAt, allowanceBasis: allowanceBasis, midweekReset: midweekReset, savedAt: now
+        )
+        let next = others.removeValue(forKey: id)
+        // 只留最近用过的几个账号
+        let kept = others.sorted { $0.value.savedAt > $1.value.savedAt }.prefix(AccountMemory.limit)
+        Self.saveAccountMemories(Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) }), defaults)
+        account = id
+        plan = detected ?? next?.plan.flatMap(Plan.init(rawValue:))
+        switchingAccount = true
+        billingAnchorDay = next?.billingAnchorDay ?? 1
+        switchingAccount = false
+        billingDayChosen = next?.billingAnchorDay != nil
+        save(next?.billingAnchorDay, "billingAnchorDay")
+        billingAnchorHour = next?.billingAnchorHour
+        billingAnchorMinute = next?.billingAnchorMinute
+        billingAnchorSecond = next?.billingAnchorSecond
+        weeklyResetAt = next?.weeklyResetAt
+        allowanceBasis = next?.allowanceBasis
+        midweekReset = next?.midweekReset
+        accountSpans = AccountSpan.switching(accountSpans, from: previous, to: id, at: now)
+        return true
+    }
+
+    /// 本机登录别的账号（现在这个以外）的时段：那时花的不占现在这个账号的额度
+    var otherAccountSpans: [DateInterval] {
+        guard let account else { return [] }
+        return AccountSpan.away(from: account, in: accountSpans)
+    }
+
+    private static let accountMemoriesKey = "accountMemories"
+
+    private static func loadAccountMemories(_ d: UserDefaults) -> [String: AccountMemory] {
+        guard let data = d.data(forKey: accountMemoriesKey),
+              let memories = try? JSONDecoder().decode([String: AccountMemory].self, from: data) else { return [:] }
+        return memories
+    }
+
+    private static func saveAccountMemories(_ memories: [String: AccountMemory], _ d: UserDefaults) {
+        guard !memories.isEmpty, let data = try? JSONEncoder().encode(memories) else {
+            d.removeObject(forKey: accountMemoriesKey)
+            return
+        }
+        d.set(data, forKey: accountMemoriesKey)
+    }
+
     // MARK: 派生值
 
     /// 只读这一个区块的那一项，别的区块收起、展开时不会牵连到这里
@@ -442,6 +532,7 @@ final class Preferences {
             billingAnchorMinute: billingAnchorMinute ?? 0,
             billingAnchorSecond: billingAnchorSecond ?? 0,
             weeklyReset: weeklyResetAt,
+            otherAccounts: otherAccountSpans,
             calendar: .current
         )
     }

@@ -77,3 +77,24 @@ private func config(fetchedAt: Date = now, cachedAccount: String? = account, sig
     let custom: [String] = ClaudeCodeUsageCache.configFiles(environment: ["CLAUDE_CONFIG_DIR": "/tmp/claude"], home: home).map(\.path)
     #expect(custom == ["/tmp/claude/.claude.json", "/Users/someone/.claude.json"])
 }
+
+// MARK: - Claude Code 现在登录的账号
+
+@Test func readsWhichAccountClaudeCodeIsSignedInto() throws {
+    let text = #"{"numStartups":3,"oauthAccount":{"accountUuid":"\#(account)","emailAddress":"someone@example.com","organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_20x","planDisplayName":"Ultra"}}"#
+    let signedIn = try #require(ClaudeCodeConfig.parse(Data(text.utf8)))
+    #expect(signedIn.account == ClaudeCodeAccount(uuid: account, email: "someone@example.com",
+                                                  organizationType: "claude_max", rateLimitTier: "default_claude_max_20x"))
+    #expect(signedIn.usage == nil)
+    // 刚登录完套餐两项还没写进去；账号和缓存的用量一次读出来
+    let fresh = try #require(ClaudeCodeConfig.parse(config()))
+    #expect(fresh.account == ClaudeCodeAccount(uuid: account, email: "someone@example.com"))
+    #expect(fresh.usage?.accountUUID == account)
+    // 退出登录后没有 oauthAccount；账号是空字符串也算没登录
+    #expect(try #require(ClaudeCodeConfig.parse(config(signedIn: nil))).account == nil)
+    #expect(try #require(ClaudeCodeConfig.parse(Data(#"{"oauthAccount":{"accountUuid":""}}"#.utf8))).account == nil)
+    #expect(ClaudeCodeConfig.parse(Data("not json".utf8)) == nil)
+    // 和本 App 读的钥匙串条目对应的是主目录下那份
+    let home: String = ClaudeCodeConfig.homeFile(home: URL(fileURLWithPath: "/Users/someone")).path
+    #expect(home == "/Users/someone/.claude.json")
+}

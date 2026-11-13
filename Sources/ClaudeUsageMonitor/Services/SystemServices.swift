@@ -67,7 +67,9 @@ final class Notifier {
         if let plan = official.detectedPlan ?? prefs.plan {
             switch official.subscriptionHealth {
             case .some(let health) where health != .active:
-                remindOnce("status-\(health)") { subscriptionAlert(health, plan: plan) }
+                // 按账号记：换到另一个同样出了问题的账号时也要提醒
+                let account = official.account.map { "\($0.prefix(8))-" } ?? ""
+                remindOnce("status-\(account)\(health)") { subscriptionAlert(health, plan: plan) }
             case .some:
                 forget { $0.hasPrefix("status-") }
                 remindTerm(store.subscriptionTerm, plan: plan, prefs: prefs)

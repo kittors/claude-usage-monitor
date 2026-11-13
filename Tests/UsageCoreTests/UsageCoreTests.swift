@@ -461,6 +461,80 @@ private func resetSnapshot(_ reading: WeeklyReading?, earlier: AllowanceBasis? =
     #expect(a.restartedAt == nil)
 }
 
+// MARK: - 本机在一周中途换过账号
+
+private let switchedAway = date("2026-10-20 13:00")
+private let switchedBack = date("2026-10-21 12:00")
+
+private func switchedSnapshot(_ reading: WeeklyReading?, away: [DateInterval], earlier: AllowanceBasis? = nil) -> UsageSnapshot {
+    let settings = UsageSettings(weeklyReset: resetWeekEnd, weeklyReading: reading, earlierAllowance: earlier,
+                                 otherAccounts: away, calendar: shanghai)
+    return UsageCalculator.snapshot(of: resetIndex, settings: settings, now: date("2026-10-21 17:00"))
+}
+
+@Test func accountSpansFollowSwitchesBackAndForth() throws {
+    let a = "00000000-0000-4000-8000-00000000000a"
+    let b = "00000000-0000-4000-8000-00000000000b"
+    // 第一次换：补上之前一直是 a
+    var spans = AccountSpan.switching([], from: a, to: b, at: switchedAway)
+    let first: [AccountSpan] = [AccountSpan(account: a, since: Date.distantPast), AccountSpan(account: b, since: switchedAway)]
+    #expect(spans == first)
+    let before: [DateInterval] = [DateInterval(start: Date.distantPast, end: switchedAway)]
+    #expect(AccountSpan.away(from: b, in: spans) == before)
+    // 换回来：a 只有中间那段不在
+    spans = AccountSpan.switching(spans, from: b, to: a, at: switchedBack)
+    let between: [DateInterval] = [DateInterval(start: switchedAway, end: switchedBack)]
+    #expect(AccountSpan.away(from: a, in: spans) == between)
+    let bAway: [DateInterval] = [before[0], DateInterval(start: switchedBack, end: Date.distantFuture)]
+    #expect(AccountSpan.away(from: b, in: spans) == bAway)
+    // 只留最近 8 天：更早的只留延续进来的那一段
+    let later = switchedBack.addingTimeInterval(10 * 86_400)
+    spans = AccountSpan.switching(spans, from: a, to: b, at: later)
+    let trimmed: [AccountSpan] = [AccountSpan(account: a, since: switchedBack), AccountSpan(account: b, since: later)]
+    #expect(spans == trimmed)
+    // 从来没换过账号
+    #expect(AccountSpan.away(from: a, in: []).isEmpty)
+    // 存进偏好再读回来
+    let data = try JSONEncoder().encode(spans)
+    let decoded = try JSONDecoder().decode([AccountSpan].self, from: data)
+    #expect(decoded == spans)
+}
+
+@Test func spendingOnAnotherAccountDoesNotCountTowardThisOne() throws {
+    // 13:00 起换成了这个账号：本周之前的 4 条（$80）是上一个账号花的。换过来后 13:30、14:00 两条，14:30 时这个账号 40%
+    let a = try #require(switchedSnapshot(lowReading, away: [DateInterval(start: .distantPast, end: switchedAway)]).weeklyAllowance)
+    #expect(abs(a.elsewhere - 80) < 1e-9)
+    #expect(a.forgiven == 0)
+    // 换过来后到 14:30 花了 $40，对应 40%：一整份 $100
+    #expect(abs(a.syncedCost - 40) < 1e-9)
+    #expect(abs(a.full - 100) < 1e-9)
+    // 这个账号一共花了 $80（含第二天两条），还剩 $20；本周用满时本机一共 $80 + $100
+    #expect(abs(a.spent - 80) < 1e-9)
+    #expect(abs(a.remaining - 20) < 1e-9)
+    #expect(abs(a.fullWeek - 180) < 1e-9)
+    #expect(abs(a.setAside - 80) < 1e-9)
+    // 不知道换过账号时，上一个账号的 $80 也算进去：40% 对应 $120，一整份被算成 $300
+    let naive = try #require(switchedSnapshot(lowReading, away: []).weeklyAllowance)
+    #expect(abs(naive.full - 300) < 1e-9)
+}
+
+@Test func switchingBackKeepsTheAccountsOwnEarlierSpending() throws {
+    // 本周先用这个账号花了 4 条（$80），13:00 换走、第二天 12:00 换回来：中间 3 条（$60）是别的账号的。
+    // 换回来后 16:00 一条，16:30 时这个账号 50%：它自己花了 $100，一整份 $200
+    let away = [DateInterval(start: switchedAway, end: switchedBack)]
+    let reading = WeeklyReading(utilization: 50, at: date("2026-10-21 16:30"))
+    let a = try #require(switchedSnapshot(reading, away: away).weeklyAllowance)
+    #expect(abs(a.elsewhere - 60) < 1e-9)
+    #expect(abs(a.syncedCost - 100) < 1e-9)
+    #expect(abs(a.full - 200) < 1e-9)
+    #expect(abs(a.spent - 100) < 1e-9)
+    // 本周本机一共 $160：预计 $260 = 别的账号的 $60 + 这个账号用满的 $200，还剩 $100
+    let week = try #require(switchedSnapshot(reading, away: away).week)
+    #expect(abs(week.cost - 160) < 1e-9)
+    #expect(week.projection(now: date("2026-10-21 17:00"), allowance: a) == Projection(cost: 260))
+    #expect(abs(a.remaining - 100) < 1e-9)
+}
+
 @Test func snapshotCoversBillingPeriodAndDays() {
     let now = date("2026-09-28 12:00")
     let t = now.timeIntervalSince1970

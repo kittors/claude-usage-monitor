@@ -18,12 +18,14 @@ public struct UsageSettings: Sendable, Equatable {
     public var earlierAllowance: AllowanceBasis?
     /// 官方最近一次在一周中途重置每周限额（不是本周的不用）
     public var midweekReset: MidweekReset?
+    /// 这几天里本机登录的是别的 Claude 账号的时段（换过账号才有）：那时花的不占现在这个账号的额度
+    public var otherAccounts: [DateInterval]
     public var calendar: Calendar
 
     public init(billingAnchorDay: Int = 1, billingAnchorHour: Int = 0, billingAnchorMinute: Int = 0,
                 billingAnchorSecond: Int = 0, weeklyReset: Date? = nil, fiveHourReset: Date? = nil,
                 weeklyReading: WeeklyReading? = nil, earlierAllowance: AllowanceBasis? = nil,
-                midweekReset: MidweekReset? = nil, calendar: Calendar = .current) {
+                midweekReset: MidweekReset? = nil, otherAccounts: [DateInterval] = [], calendar: Calendar = .current) {
         self.billingAnchorDay = billingAnchorDay
         self.billingAnchorHour = billingAnchorHour
         self.billingAnchorMinute = billingAnchorMinute
@@ -33,6 +35,7 @@ public struct UsageSettings: Sendable, Equatable {
         self.weeklyReading = weeklyReading
         self.earlierAllowance = earlierAllowance
         self.midweekReset = midweekReset
+        self.otherAccounts = otherAccounts
         self.calendar = calendar
     }
 }
@@ -78,10 +81,10 @@ public struct WeeklyAllowance: Sendable, Equatable {
     /// 本周窗口
     public var start: Date
     public var end: Date
-    /// 同步时官方的百分比（0～100），和那一刻本周的本机消耗（官方中途重置过时，只算重置之后的）
+    /// 同步时官方的百分比（0～100），和那一刻本周的本机消耗（官方中途重置过时只算重置之后的，用别的账号花的不算）
     public var utilization: Double
     public var syncedCost: Double
-    /// 本周到现在占用额度的本机消耗（官方中途重置过时，只算重置之后的）
+    /// 本周到现在占用额度的本机消耗（官方中途重置过时只算重置之后的，用别的账号花的不算）
     public var spent: Double
     /// 折算用的那次同步
     public var syncedAt: Date?
@@ -92,13 +95,17 @@ public struct WeeklyAllowance: Sendable, Equatable {
     public var forgiven = 0.0
     /// 用到的那次中途重置（记下来，之前的读数被新的比例覆盖后也不会忘）
     public var reset: MidweekReset?
+    /// 本周（中途重置过时是重置之后）本机登录别的账号时花的：不占这个账号的额度
+    public var elsewhere = 0.0
 
     /// 额度用满时占用额度的本机消耗（中途重置过时，是重置之后的一整份）
     public var full: Double { syncedCost * 100 / utilization }
     /// 本周还能花多少
     public var remaining: Double { max(0, full - spent) }
-    /// 额度用满时本周一共花多少：中途重置过时，加上重置之前花的
-    public var fullWeek: Double { forgiven + full }
+    /// 额度用满时本周本机一共花多少：加上中途重置之前花的，和用别的账号花的
+    public var fullWeek: Double { forgiven + elsewhere + full }
+    /// 本周本机花了、却不占这个账号额度的：中途重置之前的，和用别的账号的
+    public var setAside: Double { forgiven + elsewhere }
 
     /// 别处算出的一整份额度和本周的读数对不对得上。官方百分比向下取整，读数 u% 时真实的在 u 到 u+1 之间，
     /// 本周折算出的一整份就在 消耗 × 100 ÷ (u+1) 到 消耗 × 100 ÷ u 之间；差到两倍以外就是对不上
@@ -344,7 +351,7 @@ public enum UsageCalculator {
             week: week,
             weeklyAllowance: week.flatMap {
                 allowance(records: records, costs: costs, week: $0, reading: settings.weeklyReading,
-                          earlier: settings.earlierAllowance, reset: settings.midweekReset)
+                          earlier: settings.earlierAllowance, reset: settings.midweekReset, otherAccounts: settings.otherAccounts)
             },
             fiveHourCost: settings.fiveHourReset.map { reset in
                 let from = lowerBound(records, reset.timeIntervalSince1970 - fiveHourWindow)
@@ -409,15 +416,18 @@ public enum UsageCalculator {
     /// 本机消耗按读数那一刻之前的记录算，和百分比是同一时刻，之后新增的消耗不会让额度看起来变大。
     /// 本周的百分比还不到 10%（或还没同步过）时，借用之前算准的比例；没有的话先用本周的，用得越多越准。
     /// 官方中途重置过本周额度时，只拿重置之后的消耗去对应百分比，之前花的不占额度。重置是另外记下的；
-    /// 没记下、但借用的比例就是本周早些时候的、百分比比现在高出一截时，也算重置过（升级之前已经重置的那一周）
+    /// 没记下、但借用的比例就是本周早些时候的、百分比比现在高出一截时，也算重置过（升级之前已经重置的那一周）。
+    /// 本机这一周里换过账号时，登录别的账号那几段花的不是这个账号的，同样不占额度，也不拿去对应百分比
     static func allowance(records: [UsageRecord], costs: [Double], week: PeriodUsage, reading: WeeklyReading?,
-                          earlier: AllowanceBasis?, reset known: MidweekReset? = nil) -> WeeklyAllowance? {
+                          earlier: AllowanceBasis?, reset known: MidweekReset? = nil,
+                          otherAccounts: [DateInterval] = []) -> WeeklyAllowance? {
         var reset = known.flatMap { $0.belongs(toWeekEnding: week.end) ? $0 : nil }
         if reset == nil, let e = earlier, let r = reading, e.at >= week.start, e.at < r.at {
             reset = MidweekReset.between(WeeklyReading(utilization: e.utilization, at: e.at), weekEnd: week.end,
                                          and: r, weekEnd: week.end)
         }
         let weekFrom = lowerBound(records, week.start.timeIntervalSince1970)
+        let weekTo = lowerBound(records, week.end.timeIntervalSince1970)
         var from = weekFrom
         var restartedAt: Date?
         var forgiven = 0.0
@@ -427,15 +437,30 @@ public enum UsageCalculator {
             forgiven = costs[weekFrom..<max(weekFrom, from)].reduce(0, +)
             restartedAt = at
         }
-        let spent = max(0, week.cost - forgiven)
+        // 登录别的账号的时段（只看和这一周重叠的）：那时的消耗算到别的账号上
+        let away = otherAccounts
+            .filter { $0.end > week.start && $0.start < week.end }
+            .map { ($0.start.timeIntervalSince1970, $0.end.timeIntervalSince1970) }
+        func own(_ range: Range<Int>) -> Double {
+            guard !away.isEmpty else { return costs[range].reduce(0, +) }
+            var sum = 0.0
+            for i in range where !away.contains(where: { records[i].time >= $0.0 && records[i].time < $0.1 }) {
+                sum += costs[i]
+            }
+            return sum
+        }
+        let after = from..<max(from, weekTo)
+        let elsewhere = away.isEmpty ? 0 : max(0, costs[after].reduce(0, +) - own(after))
+        let spent = max(0, week.cost - forgiven - elsewhere)
         func made(utilization: Double, syncedCost: Double, at: Date, borrowed: Bool) -> WeeklyAllowance {
             WeeklyAllowance(start: week.start, end: week.end, utilization: utilization, syncedCost: syncedCost, spent: spent,
-                            syncedAt: at, borrowed: borrowed, restartedAt: restartedAt, forgiven: forgiven, reset: reset)
+                            syncedAt: at, borrowed: borrowed, restartedAt: restartedAt, forgiven: forgiven, reset: reset,
+                            elsewhere: elsewhere)
         }
         var current: WeeklyAllowance?
         if let r = reading, r.utilization.isFinite, r.utilization > 0, r.at >= (restartedAt ?? week.start), r.at < week.end {
             let to = lowerBound(records, r.at.timeIntervalSince1970)
-            let synced = costs[from..<max(from, to)].reduce(0, +)
+            let synced = own(from..<max(from, to))
             if synced > 0 { current = made(utilization: r.utilization, syncedCost: synced, at: r.at, borrowed: false) }
         }
         if let current, current.utilization >= WeeklyAllowance.minimumUtilization { return current }

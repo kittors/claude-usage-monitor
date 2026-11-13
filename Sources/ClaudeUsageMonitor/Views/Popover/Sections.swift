@@ -1177,29 +1177,43 @@ private struct SpendMath {
         let projected = money.whole(projection.cost)
         let full = money.whole(a.full)
         if span == .week, let split = restartSplit(projection, a) {
-            return L10n.t(
-                "预计 \(projected)：重置前已花的 \(split.before)，加上重置后额度用满（100%）时本机花的 \(split.after)，不管用得快慢",
-                "\(projected): \(split.before) spent before the reset, plus \(split.after) spent here with the limit fully used after it, however fast you go"
-            )
+            switch (a.forgiven > 0, a.elsewhere > 0) {
+            case (true, true):
+                return L10n.t(
+                    "预计 \(projected)：重置前和用别的账号已花的 \(split.before)，加上重置后这个账号额度用满（100%）时本机花的 \(split.after)，不管用得快慢",
+                    "\(projected): \(split.before) spent before the reset or on other accounts, plus \(split.after) spent here with this account's limit fully used after it, however fast you go"
+                )
+            case (false, true):
+                return L10n.t(
+                    "预计 \(projected)：用别的账号已花的 \(split.before)，加上这个账号额度用满（100%）时本机花的 \(split.after)，不管用得快慢",
+                    "\(projected): \(split.before) spent here on other accounts, plus \(split.after) spent here with this account's limit fully used, however fast you go"
+                )
+            default:
+                return L10n.t(
+                    "预计 \(projected)：重置前已花的 \(split.before)，加上重置后额度用满（100%）时本机花的 \(split.after)，不管用得快慢",
+                    "\(projected): \(split.before) spent before the reset, plus \(split.after) spent here with the limit fully used after it, however fast you go"
+                )
+            }
         }
         return span == .week
             ? L10n.t("预计 \(projected)：本周额度用满（100%）时本机一共花多少，不管用得快慢", "\(projected) is what this Mac spends with this week's limit fully used, however fast you go")
             : L10n.t("预计 \(projected)：已经花的 \(money.string(p.cost))，加上之后每周都用满（每周约 \(full)，跨出这个周期的那一周按时间折算）", "\(projected): \(money.string(p.cost)) spent, plus every week after this used in full (about \(full) a week, prorated where a week runs past the period)")
     }
 
-    /// 官方中途重置过时，本周的预计拆成重置前已花的和重置后额度用满的两份。两份都按显示出来的位数取整，
-    /// 后一份用预计减前一份，三个数拿来做加法正好对上。已经花得比额度用满还多（预计就是已花）时为 nil
+    /// 本周有不占这个账号额度的消耗（官方中途重置之前的、本机用别的账号的）时，预计拆成这部分和额度用满的两份。
+    /// 两份都按显示出来的位数取整，后一份用预计减前一份，三个数拿来做加法正好对上。已经花得比额度用满还多（预计就是已花）时为 nil
     @MainActor
     private func restartSplit(_ projection: Projection, _ a: WeeklyAllowance) -> (before: String, after: String)? {
-        guard a.restartedAt != nil, a.forgiven > 0, projection.cost <= a.fullWeek + 0.005 else { return nil }
+        let aside = a.setAside
+        guard aside > 0, projection.cost <= a.fullWeek + 0.005 else { return nil }
         let estimateDigits = money.unit.fractionDigits == 0 || abs(money.convert(projection.cost)) >= 100 ? 0 : 2
-        let beforeDigits = money.fractionDigits(for: a.forgiven)
+        let beforeDigits = money.fractionDigits(for: aside)
         func shown(_ usd: Double, _ digits: Int) -> Double {
             let scale = pow(10, Double(digits))
             return (money.convert(usd) * scale).rounded() / scale
         }
-        let after = max(0, shown(projection.cost, estimateDigits) - shown(a.forgiven, beforeDigits))
-        return (money.string(a.forgiven), money.string(after / money.rate, digits: max(estimateDigits, beforeDigits)))
+        let after = max(0, shown(projection.cost, estimateDigits) - shown(aside, beforeDigits))
+        return (money.string(aside), money.string(after / money.rate, digits: max(estimateDigits, beforeDigits)))
     }
 
     /// 估计的重置时刻：11月11日 01:08
@@ -1214,13 +1228,19 @@ private struct SpendMath {
         let percent = Int(a.utilization.rounded(.down))
         let full = money.whole(a.full)
         let spent = money.string(a.syncedCost)
+        // 本周本机还用别的账号花过：先说明那部分不算，下面「本机花了」只算这个账号的
+        let away = a.elsewhere > 0 ? L10n.t(
+            "本周本机用别的账号花了 \(money.string(a.elsewhere))，不占这个账号的额度。",
+            "This week \(money.string(a.elsewhere)) was spent here on other accounts, which doesn't count toward this one. "
+        ) : ""
+        let here = a.elsewhere > 0 && !a.borrowed ? L10n.t("本机用这个账号花了", "spent here on this account") : L10n.t("本机花了", "spent here")
         if let restartedAt = a.restartedAt, a.forgiven > 0 {
             let when = restartMoment(restartedAt)
             let forgiven = money.string(a.forgiven)
             let reset = L10n.t(
                 "官方在 \(when) 前后中途重置了本周额度，之前本机花的 \(forgiven) 不占额度。",
                 "Claude reset this week's limit around \(when), so the \(forgiven) spent here before that doesn't count. "
-            )
+            ) + away
             if a.borrowed {
                 let at = a.syncedAt.map { CycleSection.day($0) } ?? ""
                 return reset + L10n.t(
@@ -1229,20 +1249,20 @@ private struct SpendMath {
                 )
             }
             return reset + L10n.t(
-                "重置后已用 \(percent)%，本机花了 \(spent)，照这个比例重置后本机花到约 \(full) 时额度用满",
-                "Since then it's at \(percent)% with \(spent) spent here, so the limit is full at about \(full) after the reset"
+                "重置后已用 \(percent)%，\(here) \(spent)，照这个比例重置后本机花到约 \(full) 时额度用满",
+                "Since then it's at \(percent)% with \(spent) \(here), so the limit is full at about \(full) after the reset"
             )
         }
         if a.borrowed {
             let at = a.syncedAt.map { CycleSection.day($0) } ?? ""
-            return L10n.t(
+            return away + L10n.t(
                 "本周的百分比还不到 10%，误差太大，先用 \(at) 同步时的比例：那一周已用 \(percent)%，本机花了 \(spent)，额度用满约 \(full)",
                 "This week is still under 10%, too coarse to use, so it borrows the sync on \(at): that week was at \(percent)% with \(spent) spent here, so a full week is about \(full)"
             )
         }
-        let basis = L10n.t(
-            "上次同步时本周已用 \(percent)%，本机花了 \(spent)，照这个比例本机花到约 \(full) 时额度用满",
-            "At the last sync this week was at \(percent)% with \(spent) spent here, so the limit is full at about \(full)"
+        let basis = away + L10n.t(
+            "上次同步时本周已用 \(percent)%，\(here) \(spent)，照这个比例本机花到约 \(full) 时额度用满",
+            "At the last sync this week was at \(percent)% with \(spent) \(here), so the limit is full at about \(full)"
         )
         guard a.utilization < WeeklyAllowance.minimumUtilization else { return basis }
         return basis + L10n.t("。官方百分比只有整数，现在还小，误差较大，用得越多越准", ". The official percentage is a whole number, so this is rough while it is small and sharpens as you use more")

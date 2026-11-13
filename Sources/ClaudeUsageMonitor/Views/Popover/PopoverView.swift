@@ -499,6 +499,10 @@ private struct PlanBadge: View {
         let official = store.official
         let health = official.subscriptionHealth
         var rows: [Tip.Row] = []
+        // 换过账号的人靠它确认显示的是哪个账号
+        if let email = official.accountEmail {
+            rows.append(Tip.Row(L10n.t("账号", "Account"), email))
+        }
         if let term = store.subscriptionTerm {
             rows.append(Tip.Row(L10n.t("本期到", "Period ends"), CycleSection.dayWithWeekday(term.end)))
         }
@@ -538,7 +542,7 @@ private struct PlanBadge: View {
             return L10n.t("官方账号资料显示订阅已经结束，可以在 claude.ai 重新订阅。", "Your official account profile shows the subscription has ended. You can subscribe again on claude.ai.")
         case .active, .none:
             guard store.subscriptionTerm != nil else {
-                return L10n.t("在「设置 › 用量」选好每月扣费日后，这里显示本期还剩几天，并在到期前提醒。", "Choose your billing day in Settings > Usage to see the days left here and get reminders before it ends.")
+                return L10n.t("在「设置 › 用量」选好这个账号的每月扣费日后，这里显示本期还剩几天，并在到期前提醒。", "Choose this account's billing day in Settings > Usage to see the days left here and get reminders before it ends.")
             }
             return L10n.t(
                 "按每月扣费日（\(prefs.billingAnchorDay) 日）计算，准确日期以 claude.ai 的账单页为准。订阅状态来自官方账号资料。",

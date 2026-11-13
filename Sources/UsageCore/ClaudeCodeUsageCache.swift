@@ -34,8 +34,11 @@ public struct ClaudeCodeUsageCache: Sendable, Equatable {
     /// 从配置文件的内容里取出缓存的用量。没有缓存、格式认不出、没有任何限额，
     /// 或者配置里当前登录的账号已经换了（与 Claude Code 自己的判断相同）时为 nil
     public static func parse(_ data: Data) -> ClaudeCodeUsageCache? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let cached = json["cachedUsageUtilization"] as? [String: Any],
+        ClaudeCodeConfig.parse(data)?.usage
+    }
+
+    static func parse(json: [String: Any]) -> ClaudeCodeUsageCache? {
+        guard let cached = json["cachedUsageUtilization"] as? [String: Any],
               let ms = (cached["fetchedAtMs"] as? NSNumber)?.doubleValue, ms.isFinite, ms > 0,
               let account = cached["accountUuid"] as? String, !account.isEmpty,
               let body = cached["utilization"] as? [String: Any],
@@ -63,5 +66,61 @@ public struct ClaudeCodeUsageCache: Sendable, Equatable {
     /// 刚查到不久，可以代替本 App 这次的查询
     public func isFresh(at now: Date) -> Bool {
         abs(now.timeIntervalSince(usage.fetchedAt)) < Self.freshness
+    }
+}
+
+/// Claude Code 现在登录的账号（全局配置里的 `oauthAccount`）。
+///
+/// Claude Code 登录（`/login`、`claude auth login`）时和钥匙串里的令牌一起写进去，退出登录时删掉，
+/// 所以不用发请求就能知道换没换账号。套餐那两项是它从账号资料缓存的，刚登录完可能还没有。
+public struct ClaudeCodeAccount: Sendable, Equatable {
+    /// 与账号资料接口的 `account.uuid` 相同
+    public var uuid: String
+    public var email: String?
+    /// 与账号资料里的 `organization_type`、`rate_limit_tier` 相同
+    public var organizationType: String?
+    public var rateLimitTier: String?
+
+    public init(uuid: String, email: String? = nil, organizationType: String? = nil, rateLimitTier: String? = nil) {
+        self.uuid = uuid
+        self.email = email
+        self.organizationType = organizationType
+        self.rateLimitTier = rateLimitTier
+    }
+
+    init?(json: [String: Any]) {
+        func text(_ key: String) -> String? {
+            (json[key] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        guard let uuid = text("accountUuid") else { return nil }
+        self.init(uuid: uuid, email: text("emailAddress"), organizationType: text("organizationType"),
+                  rateLimitTier: text("organizationRateLimitTier"))
+    }
+}
+
+/// 读一次 Claude Code 全局配置拿到的两样：现在登录的账号，和它缓存的用量
+public struct ClaudeCodeConfig: Sendable, Equatable {
+    /// 为 nil 时配置里没有登录（退出登录了，或者从来没登录过）
+    public var account: ClaudeCodeAccount?
+    public var usage: ClaudeCodeUsageCache?
+
+    public init(account: ClaudeCodeAccount?, usage: ClaudeCodeUsageCache?) {
+        self.account = account
+        self.usage = usage
+    }
+
+    /// 不是 JSON 对象时为 nil
+    public static func parse(_ data: Data) -> ClaudeCodeConfig? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return ClaudeCodeConfig(
+            account: (json["oauthAccount"] as? [String: Any]).flatMap(ClaudeCodeAccount.init(json:)),
+            usage: ClaudeCodeUsageCache.parse(json: json)
+        )
+    }
+
+    /// 和本 App 读的钥匙串条目「Claude Code-credentials」对应的那份配置。
+    /// Claude Code 设置了 `CLAUDE_CONFIG_DIR` 时令牌存在另一个条目里，那份配置里的账号和本 App 用的登录对不上
+    public static func homeFile(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent(".claude.json")
     }
 }

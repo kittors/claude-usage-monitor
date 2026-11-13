@@ -13,8 +13,26 @@ struct AccountProfile: Equatable {
     var subscriptionStatus: String? = nil
     /// 续费付款需要验证时，官方给出的付款页面（Stripe 托管的账单）
     var paymentActionURL: URL? = nil
-    /// 账号的 uuid（`account.uuid`）：用来确认 Claude Code 缓存的用量是不是同一个账号的
+    /// 账号的 uuid（`account.uuid`）：查到的数字属于哪个账号，换了账号靠它发现
     var accountUUID: String? = nil
+    /// 账号的邮箱（`account.email`），只用来在面板的说明里告诉用户现在显示的是哪个账号
+    var email: String? = nil
+
+    /// Claude Code 配置里缓存的套餐（刚换账号、还没读到账号资料时先用它）
+    init(cached account: ClaudeCodeAccount) {
+        self.init(organizationType: account.organizationType, rateLimitTier: account.rateLimitTier,
+                  accountUUID: account.uuid, email: account.email)
+    }
+
+    init(organizationType: String?, rateLimitTier: String?, subscriptionStatus: String? = nil,
+         paymentActionURL: URL? = nil, accountUUID: String? = nil, email: String? = nil) {
+        self.organizationType = organizationType
+        self.rateLimitTier = rateLimitTier
+        self.subscriptionStatus = subscriptionStatus
+        self.paymentActionURL = paymentActionURL
+        self.accountUUID = accountUUID
+        self.email = email
+    }
 
     /// 订阅还在不在、付款有没有出问题；认不出时为 nil
     var health: SubscriptionHealth? {
@@ -38,13 +56,15 @@ struct AccountProfile: Equatable {
     static func decode(_ data: Data) -> AccountProfile? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let org = json["organization"] as? [String: Any]
-        let account = (json["account"] as? [String: Any])?["uuid"] as? String
+        let account = json["account"] as? [String: Any]
+        func text(_ value: Any?) -> String? { (value as? String).flatMap { $0.isEmpty ? nil : $0 } }
         return AccountProfile(
             organizationType: org?["organization_type"] as? String,
             rateLimitTier: org?["rate_limit_tier"] as? String,
             subscriptionStatus: org?["subscription_status"] as? String,
-            paymentActionURL: (org?["payment_auth_hosted_invoice_url"] as? String).flatMap { $0.isEmpty ? nil : URL(string: $0) },
-            accountUUID: account.flatMap { $0.isEmpty ? nil : $0 }
+            paymentActionURL: text(org?["payment_auth_hosted_invoice_url"]).flatMap { URL(string: $0) },
+            accountUUID: text(account?["uuid"]),
+            email: text(account?["email"])
         )
     }
 }
@@ -249,6 +269,8 @@ final class OfficialUsageService {
         case opened
         /// 等待用户完成登录：先只读取钥匙串，登录后才发请求
         case login
+        /// Claude Code 换了账号登录：查一次新账号的用量和账号资料。和打开面板一样，10 秒内或限流中先不查
+        case account
     }
 
     private(set) var state: State = .connecting
@@ -272,8 +294,12 @@ final class OfficialUsageService {
     private(set) var notice: String?
     /// 正在查询
     private(set) var isFetching = false
+    /// 现在显示的是哪个账号（邮箱，来自账号资料或 Claude Code 的配置）。还不知道时为 nil
+    private(set) var accountEmail: String?
 
     @ObservationIgnored var onChange: (() -> Void)?
+    /// 认出了账号（第一次认出时前一个为 nil），或者换了账号。在 `onChange` 之前调用，参数是之前和现在的账号、已知的套餐
+    @ObservationIgnored var onAccountChange: ((_ previous: String?, _ current: String, _ plan: Plan?) -> Void)?
     /// 多久读一次账号资料。平时 6 小时；快到扣费日、刚进入新的一期或订阅出了问题时，UsageStore 改成 1 小时
     @ObservationIgnored var profileInterval: TimeInterval = 6 * 3600
     /// 登录快过期时自动续期（与偏好设置同步，默认开启）
@@ -289,8 +315,17 @@ final class OfficialUsageService {
     /// 失败后的重试时间（手动刷新不受限制）
     @ObservationIgnored private var retryAfter = Date.distantPast
     @ObservationIgnored private var noticeWork: DispatchWorkItem?
-    /// 本 App 登录的账号（来自账号资料，跨重启保留）：只换上同一个账号的 Claude Code 缓存
+    /// 现在显示的数字、套餐和订阅状态属于哪个账号（来自账号资料，跨重启保留）：只换上同一个账号的 Claude Code 缓存
     @ObservationIgnored private var accountUUID: String?
+    /// 已经确认过账号的那次登录（refresh token，没有时用 access token）。钥匙串里的登录换了，
+    /// 可能是 Claude Code 续期了，也可能是换了账号，下次查询时顺带读账号资料核对
+    @ObservationIgnored private var knownLogin: String?
+    /// 上次在 Claude Code 配置里看到的登录账号（uuid；退出登录时为空字符串）。只在它变了的时候处理
+    @ObservationIgnored private var sightedAccount: String?
+    /// 查询途中看到的配置变化，查询结束后再处理，免得和查询结果交错
+    @ObservationIgnored private var pendingSighting: ClaudeCodeConfig?
+    /// 换了账号后要查一次新账号；当时离上次请求不到 10 秒或正在查询时，在这之前每次检查配置时再试
+    @ObservationIgnored private var accountCheckUntil = Date.distantPast
     /// 上次读 Claude Code 配置文件时它们的修改时间：没变就不用再解析
     @ObservationIgnored private var claudeConfigStamps: [String: Date] = [:]
     @ObservationIgnored private var checkingClaudeCode = false
@@ -304,6 +339,13 @@ final class OfficialUsageService {
     @ObservationIgnored private var budget = OfficialUsageService.loadBudget() {
         didSet { Self.saveBudget(budget) }
     }
+    /// 这个接口的额度按账号算：换账号时把上一个账号的预算收起来，换回来时接着用
+    @ObservationIgnored private var otherBudgets = OfficialUsageService.loadOtherBudgets() {
+        didSet { Self.saveOtherBudgets(otherBudgets) }
+    }
+
+    /// 现在显示的是哪个账号（uuid）
+    var account: String? { accountUUID }
 
     init() {
         loadCachedUsage()
@@ -371,7 +413,7 @@ final class OfficialUsageService {
                     : L10n.tNow("刚刚查询过，\(Self.waitText(wait))后可再试", "Just checked. Try again in \(Self.waitText(wait))"))
                 return false
             }
-        case .opened:
+        case .opened, .account:
             guard sinceAttempt >= Self.minimumSpacing, budget.allows(manual: false, at: now) else { return false }
         case .login:
             guard state.awaitingLogin, sinceAttempt >= 2, budget.allows(manual: true, at: now) else { return false }
@@ -379,9 +421,11 @@ final class OfficialUsageService {
         isFetching = true
         lastAttempt = now
         lastTrigger = trigger
+        if trigger == .account { accountCheckUntil = .distantPast }
         // 发请求前会在后台再确认一次出口，盾牌不变：只有网络真的变了才显示加载
         let request = FetchRequest(
             cached: credentials,
+            knownLogin: knownLogin,
             autoRenew: autoRenew,
             wantsProfile: now.timeIntervalSince(lastProfileFetch) > profileInterval,
             deadRefreshToken: deadRefreshToken,
@@ -396,6 +440,11 @@ final class OfficialUsageService {
             DispatchQueue.main.async {
                 self.isFetching = false
                 self.apply(outcome)
+                // 查询途中 Claude Code 换了账号登录：等这次的结果处理完再跟着换
+                if let pending = self.pendingSighting {
+                    self.pendingSighting = nil
+                    self.sighted(pending)
+                }
             }
         }
         return true
@@ -420,22 +469,71 @@ final class OfficialUsageService {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
-    /// 看看 Claude Code 有没有查到更新的数字：只读本机的配置文件，不发请求；文件没变时什么都不做。
-    /// 被限流期间界面也能跟上 Claude Code 查到的数字。
+    /// 看看 Claude Code 的配置变了没有：换了账号登录就跟着换，查到了更新的数字就换上。
+    /// 只读本机的配置文件，不发请求；文件没变时什么都不做。被限流期间界面也能跟上 Claude Code 查到的数字。
     func checkClaudeCode() {
-        // 还不知道自己的账号（第一次读到账号资料之前）时不换，免得换上别的账号的数字
-        guard state != .disabled, !isFetching, !checkingClaudeCode, accountUUID != nil else { return }
+        guard state != .disabled else { return }
+        // 换了账号后还没查成新账号（当时离上次请求太近或正在查询）：接着试
+        if accountCheckUntil > Date(), !isFetching { refresh(.account) }
+        // 还不知道自己的账号（第一次读到账号资料之前）时不看：分不清 Claude Code 登录的是不是同一个账号，免得换上别的账号的数字
+        guard !isFetching, !checkingClaudeCode, accountUUID != nil else { return }
         checkingClaudeCode = true
         let stamps = claudeConfigStamps
         cacheQueue.async {
-            let (cache, latest) = Self.readClaudeCodeCache(skipping: stamps)
+            let read = Self.readClaudeCodeConfig(skipping: stamps)
             DispatchQueue.main.async {
                 self.checkingClaudeCode = false
-                self.claudeConfigStamps = latest
+                self.claudeConfigStamps = read.stamps
+                guard self.state != .disabled else { return }
+                if let home = read.home {
+                    if self.isFetching { self.pendingSighting = home } else { self.sighted(home) }
+                }
                 // 正在查询时以那次的结果为准
-                guard let cache, !self.isFetching, self.state != .disabled,
+                guard let cache = read.cache, !self.isFetching,
                       cache.replaces(self.usage?.fetchedAt, account: self.accountUUID, now: Date()) else { return }
                 self.apply(.claudeCode(cache.usage))
+            }
+        }
+    }
+
+    /// 读到了 Claude Code 现在登录的账号（只在它变了的时候处理）。
+    /// 换了账号：马上换成新账号，Claude Code 查到过它的数字就先用上，再查一次核对；退出了登录：看一眼钥匙串
+    private func sighted(_ config: ClaudeCodeConfig) {
+        let uuid = config.account?.uuid ?? ""
+        // 还不知道自己的账号时，等账号资料来认
+        guard accountUUID != nil, uuid != sightedAccount else { return }
+        let first = sightedAccount == nil
+        sightedAccount = uuid
+        guard let signedIn = config.account else {
+            if !first { checkLoginLocally() }
+            return
+        }
+        guard signedIn.uuid != accountUUID else {
+            if accountEmail == nil { accountEmail = signedIn.email }
+            return
+        }
+        let now = Date()
+        switchAccount(to: signedIn.uuid, plan: AccountProfile(cached: signedIn).plan, email: signedIn.email, at: now)
+        if let cache = config.usage, cache.replaces(nil, account: signedIn.uuid, now: now) {
+            apply(.claudeCode(cache.usage))
+        } else {
+            onChange?()
+        }
+        accountCheckUntil = now.addingTimeInterval(5 * 60)
+        refresh(.account)
+    }
+
+    /// 只读钥匙串、不发请求：Claude Code 退出登录后，登录真的没了就马上提示重新登录
+    private func checkLoginLocally() {
+        guard state != .disabled, !isFetching else { return }
+        queue.async {
+            let result = CredentialStore.load()
+            DispatchQueue.main.async {
+                guard !self.isFetching, self.state != .disabled, case .failure(let failure) = result else { return }
+                switch failure {
+                case .notFound, .invalid, .signedOut: self.apply(.credentialFailure(failure))
+                case .locked, .denied, .unreadable: break
+                }
             }
         }
     }
@@ -462,6 +560,8 @@ final class OfficialUsageService {
 
     private struct FetchRequest: Sendable {
         var cached: ClaudeOAuth.Credentials?
+        /// 已经确认过账号的那次登录（见 `loginID`）
+        var knownLogin: String?
         var autoRenew: Bool
         var wantsProfile: Bool
         var deadRefreshToken: String?
@@ -473,8 +573,20 @@ final class OfficialUsageService {
         var shownAt: Date?
     }
 
+    /// 这次查询用的是哪次登录，属于哪个账号
+    private struct LoginCheck {
+        /// 最后用来查询的登录（续期过就是续期后的）
+        var credentials: ClaudeOAuth.Credentials
+        /// 和已经确认过账号的是同一次登录（或者是本 App 由它续期得到的）
+        var known: Bool
+        /// 顺带读到的账号资料（登录换了、或者到了该读的时候才读）
+        var profile: AccountProfile?
+        /// 登录换了、又没读到账号资料时，Claude Code 配置里现在登录的账号
+        var hint: ClaudeCodeAccount?
+    }
+
     private enum Outcome {
-        case success(OfficialUsage, ClaudeOAuth.Credentials, AccountProfile?, renewed: Bool)
+        case success(OfficialUsage, LoginCheck, renewed: Bool)
         /// Claude Code 查到的更新的数字（读自它的全局配置，没有发请求）
         case claudeCode(OfficialUsage)
         case credentialFailure(CredentialStore.Failure)
@@ -484,8 +596,8 @@ final class OfficialUsageService {
         case signedOut(String?)
         case renewFailed(String, retryIn: TimeInterval)
         case unauthorized
-        /// 被限流：服务器要求等的秒数（没给时为 nil）、响应里的错误类型（记日志用），以及顺带读到的账号资料
-        case rateLimited(TimeInterval?, String?, AccountProfile?)
+        /// 被限流：服务器要求等的秒数（没给时为 nil）、响应里的错误类型（记日志用），以及用的登录和顺带读到的账号资料
+        case rateLimited(TimeInterval?, String?, LoginCheck)
         case failed(String)
         /// 出口不是 Claude 的可用出口，没有发送用量请求
         case exitBlocked
@@ -510,21 +622,23 @@ final class OfficialUsageService {
     private func apply(_ outcome: Outcome) {
         let now = Date()
         let previous = state
+        // 先认出这次查到的是哪个账号：换了账号时，下面的请求预算、数字和套餐都记到新账号上
+        switch outcome {
+        case .success(_, let login, _), .rateLimited(_, _, let login): settle(login, at: now)
+        default: break
+        }
         if outcome.reachedUsageEndpoint {
             budget.spend(at: now)
             // 这次请求没有被限流：之前的限流已经过去（冷却和放慢的节奏仍由预算管着）
             if case .rateLimited = outcome {} else { isRateLimited = false }
         }
         switch outcome {
-        case .success(let usage, let credentials, let profile, let renewed):
+        case .success(let usage, _, let renewed):
             // 数字滚动、进度条缓动到新值
             withAnimation(self.usage == nil ? nil : .smooth(duration: 0.6)) { self.usage = usage }
             usageFromClaudeCode = false
-            self.credentials = credentials
-            loginExpiresAt = credentials.refreshTokenExpiresAt
             deadRefreshToken = nil
             if renewed { lastRenewal = now }
-            if let profile { adopt(profile, at: now) }
             state = .connected
             retryAfter = .distantPast
             budget.succeeded()
@@ -567,12 +681,11 @@ final class OfficialUsageService {
             credentials = nil
             state = autoRenew ? .failed(L10n.tNow("授权失败", "Authorization failed")) : .expired
             retryAfter = now.addingTimeInterval(5 * 60)
-        case .rateLimited(let retry, _, let profile):
+        case .rateLimited(let retry, _, _):
             // 同一账号的 Claude Code 等客户端共用这份额度：先停一阵（15 分钟起，冷却期间又被拒就翻倍，最长 1 小时），
             // 之后更慢地攒，没有再被限流时慢慢恢复
             budget.rateLimited(retryAfter: retry, at: now)
             isRateLimited = true
-            if let profile { adopt(profile, at: now) }
             state = .failed(Self.rateLimitedReason)
         case .failed(let message):
             state = .failed(message)
@@ -590,13 +703,73 @@ final class OfficialUsageService {
         onChange?()
     }
 
-    /// 读到了账号资料：套餐、订阅状态，以及这次登录的账号
+    /// 读到了账号资料：套餐和订阅状态（账号已经在 `settle` 里对上了）
     private func adopt(_ profile: AccountProfile, at now: Date) {
         detectedPlan = profile.plan
         subscriptionHealth = profile.health
         lastProfileFetch = now
         profileCheckedAt = now
-        if let account = profile.accountUUID { accountUUID = account }
+        if let email = profile.email { accountEmail = email }
+    }
+
+    /// 这次查询用的登录属于哪个账号：读到了账号资料以它为准；还是确认过的那次登录（或由它续期而来）就还是原来的账号；
+    /// 都不是时按 Claude Code 配置里现在登录的账号。和现在显示的不是同一个，就换过去
+    private func settle(_ login: LoginCheck, at now: Date) {
+        let profile = login.profile
+        let resolved = profile?.accountUUID ?? (login.known ? accountUUID : login.hint?.uuid)
+        if let resolved, resolved != accountUUID {
+            let plan = profile?.plan ?? login.hint.flatMap { AccountProfile(cached: $0).plan }
+            if accountUUID == nil {
+                // 第一次认出账号：之前记下的都是它的
+                accountUUID = resolved
+                saveCachedUsage(usage)
+                onAccountChange?(nil, resolved, plan)
+            } else {
+                switchAccount(to: resolved, plan: plan, email: profile?.email ?? login.hint?.email, at: now)
+            }
+        }
+        credentials = login.credentials
+        loginExpiresAt = login.credentials.refreshTokenExpiresAt
+        // 账号对上了才记下这次登录：账号资料确认过，或者本来就是确认过的那次登录
+        if login.known || profile?.accountUUID != nil { knownLogin = Self.loginID(login.credentials) }
+        if let profile { adopt(profile, at: now) }
+    }
+
+    /// 换了账号：上一个账号的数字、套餐、订阅状态和登录都不再算数，请求预算换成这个账号的。
+    /// 之后 Claude Code 查到过这个账号的数字会换上，下一次查询顺带读它的账号资料
+    private func switchAccount(to account: String, plan: Plan?, email: String?, at now: Date) {
+        let previous = accountUUID
+        Self.log.notice("switched to another Claude account")
+        var others = otherBudgets
+        if let previous { others[previous] = budget }
+        budget = others.removeValue(forKey: account) ?? RequestBudget()
+        // 两天没用过的预算早就攒满了，和新的一样，不用再记
+        otherBudgets = others.filter { now.timeIntervalSince($0.value.updatedAt) < 2 * 86_400 }
+        accountUUID = account
+        accountEmail = email
+        knownLogin = nil
+        credentials = nil
+        usage = nil
+        usageFromClaudeCode = false
+        detectedPlan = plan
+        subscriptionHealth = nil
+        profileCheckedAt = nil
+        lastProfileFetch = .distantPast
+        lastRenewal = nil
+        loginExpiresAt = nil
+        retryAfter = .distantPast
+        isRateLimited = budget.cooldown(at: now) > 0
+        if state != .disabled { state = isRateLimited ? .failed(Self.rateLimitedReason) : .connecting }
+        // 之前读过、因为不是同一个账号没用上的缓存，重新读一遍
+        claudeConfigStamps = [:]
+        saveCachedUsage(nil)
+        onAccountChange?(previous, account, plan)
+        DispatchQueue.main.async { [weak self] in self?.checkClaudeCode() }
+    }
+
+    /// 一次登录的标识：refresh token（没有时用 access token）。只放在内存里，不记日志
+    nonisolated private static func loginID(_ c: ClaudeOAuth.Credentials) -> String {
+        c.refreshToken.flatMap { $0.isEmpty ? nil : $0 } ?? c.accessToken
     }
 
     /// 需要重新登录：清掉与这次登录相关的信息，重新登录（可能换了账号）后重新获取套餐
@@ -610,7 +783,7 @@ final class OfficialUsageService {
     /// 只记录结果、状态与百分比，不记录任何凭据
     private static func record(_ outcome: Outcome, state: State, usage: OfficialUsage?) {
         let result = switch outcome {
-        case .success(_, _, _, let renewed): renewed ? "ok (renewed login)" : "ok"
+        case .success(_, _, let renewed): renewed ? "ok (renewed login)" : "ok"
         case .claudeCode(let usage): "from Claude Code (fetched \(Int(Date().timeIntervalSince(usage.fetchedAt)))s ago)"
         case .credentialFailure(let f): "credentials-\(f)"
         case .expired: "login expired"
@@ -633,22 +806,35 @@ final class OfficialUsageService {
     nonisolated(unsafe) private static var forceRenewPending = ProcessInfo.processInfo.environment["CUM_FORCE_RENEW"] == "1"
 
     nonisolated private static func fetch(_ r: FetchRequest) -> Outcome {
+        var renewed = false
+        var current: ClaudeOAuth.Credentials
+        // 每次都重新读登录：Claude Code 可能已经续期，也可能换了账号、退出了登录（它会吊销旧账号的令牌）
+        switch CredentialStore.load() {
+        case .success(let loaded):
+            let stored = loaded.stored.credentials
+            // 钥匙串里的比手里的还旧（本 App 续期后没能写回）：接着用手里的
+            if let cached = r.cached, let mine = cached.expiresAt, let theirs = stored.expiresAt, mine > theirs {
+                current = cached
+            } else {
+                current = stored
+            }
+        case .failure(let failure):
+            switch failure {
+            case .locked, .denied, .unreadable:
+                // 钥匙串暂时读不了：手里的登录还没过期就先用着
+                guard let cached = r.cached, !cached.isExpired() else { return .credentialFailure(failure) }
+                current = cached
+            case .notFound, .invalid, .signedOut:
+                return .credentialFailure(failure)
+            }
+        }
+        // 还是确认过账号的那次登录。不是的话（Claude Code 续期了，或者换了账号），这次顺带读账号资料核对
+        var known = r.knownLogin != nil && loginID(current) == r.knownLogin
         // Claude Code 刚查过同一账号的数字：直接用，不再去碰共用的额度
-        if r.claudeCodeAccount != nil, let cache = readClaudeCodeCache(skipping: [:]).cache {
+        if r.claudeCodeAccount != nil, known, !r.wantsProfile, let cache = readClaudeCodeConfig(skipping: [:]).cache {
             let now = Date()
             if cache.isFresh(at: now), cache.replaces(r.shownAt, account: r.claudeCodeAccount, now: now) {
                 return .claudeCode(cache.usage)
-            }
-        }
-        var renewed = false
-        var current: ClaudeOAuth.Credentials
-        if let cached = r.cached, !cached.needsRefresh() {
-            current = cached
-        } else {
-            // 没有缓存或即将过期：重新读取（Claude Code 可能已经续期）
-            switch CredentialStore.load() {
-            case .success(let loaded): current = loaded.stored.credentials
-            case .failure(let failure): return .credentialFailure(failure)
             }
         }
         // 登录已经过期又不能续期：不用发任何请求
@@ -671,6 +857,8 @@ final class OfficialUsageService {
                 current = c
                 renewed = true
             case .current(let c):
+                // 钥匙串里已经换了一次登录（别处续期了，或者换了账号）
+                if loginID(c) != r.knownLogin { known = false }
                 current = c
             case .unavailable(let outcome):
                 // 还没真正过期就先用着，下次同步再续
@@ -683,6 +871,7 @@ final class OfficialUsageService {
             // 与 Claude Code 收到 401 时的处理相同：钥匙串里已有新令牌就直接用，否则强制续期后重试
             if case .success(let loaded) = CredentialStore.load(), loaded.stored.credentials.accessToken != current.accessToken {
                 current = loaded.stored.credentials
+                if loginID(current) != r.knownLogin { known = false }
                 result = request(token: current.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
             } else {
                 switch renew(current, request: r, force: true) {
@@ -692,6 +881,7 @@ final class OfficialUsageService {
                     result = request(token: c.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
                 case .current(let c) where c.accessToken != current.accessToken:
                     current = c
+                    if loginID(current) != r.knownLogin { known = false }
                     result = request(token: c.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6)
                 case .current:
                     break
@@ -700,31 +890,55 @@ final class OfficialUsageService {
                 }
             }
         }
+        // 账号资料是另一个接口：登录换过、或者到了该读的时候就读，限流期间也照常读，这样才知道查到的是哪个账号、什么套餐
+        let checksAccount = (r.wantsProfile || !known) && mayReadProfile(current)
+        let used = current
+        let wasKnown = known
+        func check() -> LoginCheck {
+            let found = checksAccount ? profile(token: used.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6) : nil
+            // 登录换了、又没读到账号资料：看 Claude Code 现在登录的是哪个账号
+            let hint = wasKnown || found?.accountUUID != nil ? nil : readHomeAccount()
+            return LoginCheck(credentials: used, known: wasKnown, profile: found, hint: hint)
+        }
         switch result {
-        case .success(let usage):
-            return .success(usage, current, r.wantsProfile ? profile(token: current.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6) : nil, renewed: renewed)
+        case .success(let usage): return .success(usage, check(), renewed: renewed)
         case .unauthorized: return .unauthorized
-        case .rateLimited(let retry, let detail):
-            // 账号资料是另一个接口：到了该读的时候照常读，限流期间也知道套餐和账号（换上 Claude Code 的数字要用到账号）
-            return .rateLimited(retry, detail, r.wantsProfile ? profile(token: current.accessToken, proxy: r.proxy, blockIPv6: r.blockIPv6) : nil)
+        case .rateLimited(let retry, let detail): return .rateLimited(retry, detail, check())
         case .failed(let m): return .failed(m)
         }
     }
 
-    /// 读 Claude Code 的全局配置，取出它缓存的用量（有几个配置文件时取最新的一份）。
+    /// 令牌能不能读账号资料：Claude Code 登录 claude.ai 时会申请 `user:profile`；没写权限的旧凭据照常试
+    nonisolated private static func mayReadProfile(_ c: ClaudeOAuth.Credentials) -> Bool {
+        c.scopes.isEmpty || c.scopes.contains("user:profile")
+    }
+
+    /// 读 Claude Code 的全局配置：取出它缓存的用量（有几个配置文件时取最新的一份），
+    /// 以及和本 App 用的登录对应的那份配置（`home`，这次没有重新解析时为 nil）。
     /// 修改时间与 `stamps` 里记下的相同的文件不再解析；返回这次看到的修改时间。只在后台队列调用。
-    nonisolated private static func readClaudeCodeCache(skipping stamps: [String: Date]) -> (cache: ClaudeCodeUsageCache?, stamps: [String: Date]) {
+    nonisolated private static func readClaudeCodeConfig(skipping stamps: [String: Date])
+        -> (cache: ClaudeCodeUsageCache?, stamps: [String: Date], home: ClaudeCodeConfig?) {
         var newest: ClaudeCodeUsageCache?
         var seen: [String: Date] = [:]
+        var home: ClaudeCodeConfig?
+        let homePath = ClaudeCodeConfig.homeFile().path
         for url in ClaudeCodeUsageCache.configFiles() {
             guard let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date else { continue }
             seen[url.path] = modified
             guard stamps[url.path] != modified,
                   let data = try? Data(contentsOf: url),
-                  let cache = ClaudeCodeUsageCache.parse(data) else { continue }
+                  let config = ClaudeCodeConfig.parse(data) else { continue }
+            if url.path == homePath { home = config }
+            guard let cache = config.usage else { continue }
             if newest.map({ cache.usage.fetchedAt > $0.usage.fetchedAt }) ?? true { newest = cache }
         }
-        return (newest, seen)
+        return (newest, seen, home)
+    }
+
+    /// Claude Code 现在登录的账号（只读和本 App 的登录对应的那份配置）。只在后台队列调用
+    nonisolated private static func readHomeAccount() -> ClaudeCodeAccount? {
+        guard let data = try? Data(contentsOf: ClaudeCodeConfig.homeFile()) else { return nil }
+        return ClaudeCodeConfig.parse(data)?.account
     }
 
     private enum RenewStep {
@@ -889,6 +1103,23 @@ final class OfficialUsageService {
         UserDefaults.standard.set(data, forKey: budgetKey)
     }
 
+    /// 别的账号的预算（按账号的 uuid）
+    private static let otherBudgetsKey = "officialRequestBudgetsByAccount"
+
+    private static func loadOtherBudgets() -> [String: RequestBudget] {
+        guard let data = UserDefaults.standard.data(forKey: otherBudgetsKey),
+              let budgets = try? JSONDecoder().decode([String: RequestBudget].self, from: data) else { return [:] }
+        return budgets
+    }
+
+    private static func saveOtherBudgets(_ budgets: [String: RequestBudget]) {
+        guard !budgets.isEmpty, let data = try? JSONEncoder().encode(budgets) else {
+            UserDefaults.standard.removeObject(forKey: otherBudgetsKey)
+            return
+        }
+        UserDefaults.standard.set(data, forKey: otherBudgetsKey)
+    }
+
     // MARK: 上次的官方数字（不含登录）
 
     private static var cacheURL: URL {
@@ -907,7 +1138,8 @@ final class OfficialUsageService {
             var utilization: Double
             var resetsAt: Date?
         }
-        var fetchedAt: Date
+        /// 为 nil 时只记了账号，还没有这个账号的数字（刚换了账号）。1.7.3 及以前总有这一项
+        var fetchedAt: Date?
         var fiveHour: Item?
         var sevenDay: Item?
         var sevenDaySonnet: Item?
@@ -929,6 +1161,12 @@ final class OfficialUsageService {
         func limit(_ item: UsageCache.Item?) -> OfficialLimit? {
             item.map { OfficialLimit(utilization: $0.utilization, resetsAt: $0.resetsAt) }
         }
+        if let account = cache.accountUUID { accountUUID = account }
+        guard let fetchedAt = cache.fetchedAt else {
+            usage = nil
+            usageFromClaudeCode = false
+            return
+        }
         usage = OfficialUsage(
             fiveHour: limit(cache.fiveHour),
             sevenDay: limit(cache.sevenDay),
@@ -938,29 +1176,30 @@ final class OfficialUsageService {
                 ScopedLimit(modelName: $0.modelName, limit: OfficialLimit(utilization: $0.utilization, resetsAt: $0.resetsAt))
             },
             extraUsageEnabled: cache.extraUsageEnabled,
-            fetchedAt: cache.fetchedAt
+            fetchedAt: fetchedAt
         )
         usageFromClaudeCode = cache.fromClaudeCode ?? false
-        if let account = cache.accountUUID { accountUUID = account }
         if state == .connecting || state == .disabled { state = .connected }
     }
 
-    private func saveCachedUsage(_ usage: OfficialUsage) {
+    /// 记下现在的数字和它属于哪个账号。`usage` 为 nil 时只记账号（刚换了账号、还没有它的数字），
+    /// 重启后不会把上一个账号的数字当成这个账号的
+    private func saveCachedUsage(_ usage: OfficialUsage?) {
         func item(_ limit: OfficialLimit?) -> UsageCache.Item? {
             limit.map { UsageCache.Item(utilization: $0.utilization, resetsAt: $0.resetsAt) }
         }
         let cache = UsageCache(
-            fetchedAt: usage.fetchedAt,
-            fiveHour: item(usage.fiveHour),
-            sevenDay: item(usage.sevenDay),
-            sevenDaySonnet: item(usage.sevenDaySonnet),
-            sevenDayOpus: item(usage.sevenDayOpus),
-            scoped: usage.scoped.map {
+            fetchedAt: usage?.fetchedAt,
+            fiveHour: item(usage?.fiveHour),
+            sevenDay: item(usage?.sevenDay),
+            sevenDaySonnet: item(usage?.sevenDaySonnet),
+            sevenDayOpus: item(usage?.sevenDayOpus),
+            scoped: (usage?.scoped ?? []).map {
                 UsageCache.Scoped(modelName: $0.modelName, utilization: $0.limit.utilization, resetsAt: $0.limit.resetsAt)
             },
-            extraUsageEnabled: usage.extraUsageEnabled,
+            extraUsageEnabled: usage?.extraUsageEnabled,
             accountUUID: accountUUID,
-            fromClaudeCode: usageFromClaudeCode
+            fromClaudeCode: usage == nil ? nil : usageFromClaudeCode
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970

@@ -246,8 +246,8 @@ private struct UsagePage: View {
         let period = L10n.t("当前周期 ", "Current period ")
             + UsageCalculator.periodRange(start: interval.start, end: interval.end, calendar: .current, locale: Localization.shared.locale)
         let subscription = prefs.billingDayChosen
-            ? L10n.t("面板上订阅还剩几天、到期提醒都按这一天算", "The panel's days left and the reminders before the end follow this day.")
-            : L10n.t("选好后，面板显示订阅还剩几天，并在到期前提醒", "Pick it to see the days left in the panel and get reminders before the end.")
+            ? L10n.t("面板上订阅还剩几天、到期提醒都按这一天算。每个账号分开记", "The panel's days left and the reminders before the end follow this day. Each account keeps its own.")
+            : L10n.t("选好后，面板显示订阅还剩几天，并在到期前提醒。每个账号分开记", "Pick it to see the days left in the panel and get reminders before the end. Each account keeps its own.")
         return period + "\n" + subscription
     }
 

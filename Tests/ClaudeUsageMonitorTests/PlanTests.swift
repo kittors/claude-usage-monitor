@@ -40,8 +40,24 @@ import UsageCore
     // 用来确认 Claude Code 缓存的用量是同一个账号的（与它写进配置的 accountUuid 相同）
     let profile = try #require(AccountProfile.decode(Data(#"{"account":{"uuid":"00000000-0000-4000-8000-000000000001","email":"someone@example.com"},"organization":{"organization_type":"claude_max"}}"#.utf8)))
     #expect(profile.accountUUID == "00000000-0000-4000-8000-000000000001")
+    // 面板的说明里写出现在显示的是哪个账号
+    #expect(profile.email == "someone@example.com")
     #expect(AccountProfile.decode(Data(#"{"account":{"uuid":""},"organization":{}}"#.utf8))?.accountUUID == nil)
     #expect(AccountProfile.decode(Data(#"{"organization":{}}"#.utf8))?.accountUUID == nil)
+    #expect(AccountProfile.decode(Data(#"{"account":{"email":""},"organization":{}}"#.utf8))?.email == nil)
+}
+
+@Test func aSwitchedAccountShowsThePlanClaudeCodeCached() {
+    // 刚换账号、还没读到账号资料时，先用 Claude Code 配置里缓存的套餐
+    let cached = AccountProfile(cached: ClaudeCodeAccount(uuid: "00000000-0000-4000-8000-000000000002", email: "other@example.com",
+                                                         organizationType: "claude_max", rateLimitTier: "default_claude_max_20x"))
+    #expect(cached.plan == .ultra)
+    #expect(cached.accountUUID == "00000000-0000-4000-8000-000000000002")
+    #expect(cached.email == "other@example.com")
+    // 不发请求认不出订阅状态，不下结论
+    #expect(cached.subscriptionStatus == nil)
+    // 刚登录完，Claude Code 还没写套餐：不猜
+    #expect(AccountProfile(cached: ClaudeCodeAccount(uuid: "00000000-0000-4000-8000-000000000003")).plan == nil)
 }
 
 @Test func rateLimitErrorsAreSummarizedForTheLog() {

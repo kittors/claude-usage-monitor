@@ -145,6 +145,11 @@ final class UsageStore {
 
     func start() {
         official.onChange = { [weak self] in self?.officialChanged() }
+        official.onAccountChange = { [weak self] previous, current, plan in
+            self?.accountChanged(from: previous, to: current, plan: plan)
+        }
+        // 按账号记的设置跟上次显示的账号对齐：1.7.3 及以前没分账号记，现有的就是这个账号的
+        if let account = official.account { prefs.useAccount(account, plan: official.detectedPlan) }
         official.autoRenew = prefs.autoRenewLogin
         official.outboundProxy = OutboundProxy.parse(prefs.officialProxy)
         lastSeenSync = official.usage?.fetchedAt
@@ -160,6 +165,8 @@ final class UsageStore {
         ExchangeRates.shared.refreshIfStale()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { AppUpdate.shared.checkIfStale() }
         observeOfficialSettings()
+        // 关着 App 时 Claude Code 可能换了账号：先看一眼它现在登录的是谁（只读本机配置），不等第一次查询
+        official.checkClaudeCode()
 
         engine.prepare(signature: prefs.sourceSignature) { hadCache in
             DispatchQueue.main.async {
@@ -308,6 +315,7 @@ final class UsageStore {
         updateSubscription()
         let settings = billingSettings()
         computedReading = settings.weeklyReading
+        let epoch = accountEpoch
         engine.compute(settings: settings, now: Date()) { [weak self] snap, files in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -319,7 +327,8 @@ final class UsageStore {
                 }
                 self.indexedFiles = files
                 self.lastUpdated = Date()
-                self.rememberAllowance(snap)
+                // 算的途中换了账号：这一份按上一个账号的读数算，比例不能记到新账号上（换账号后已经重算）
+                if epoch == self.accountEpoch { self.rememberAllowance(snap) }
                 self.phase = (snap?.hasData ?? false) ? .ready : (self.isScanning ? self.phase : .empty)
                 if pulse { self.pulse += 1 }
                 self.trackConsumption(snap)
@@ -364,6 +373,18 @@ final class UsageStore {
     @ObservationIgnored private var computedReading: WeeklyReading?
     /// 上一次看到的官方本周读数，和那一周的重置时间（启动时是上次存下的官方数据）
     @ObservationIgnored private var lastWeekly: (reading: WeeklyReading, weekEnd: Date)?
+    /// 每换一次账号 +1：换之前开始的计算按上一个账号的设置算，结果不再记
+    @ObservationIgnored private var accountEpoch = 0
+
+    /// 认出了账号或者换了账号：按账号记的设置跟着换。换了账号时，上一个账号的读数不再拿来和新账号的比
+    private func accountChanged(from previous: String?, to current: String, plan: Plan?) {
+        let switched = prefs.useAccount(current, plan: plan)
+        guard switched || previous != nil else { return }
+        accountEpoch += 1
+        lastWeekly = nil
+        computedReading = nil
+        recompute()
+    }
 
     /// 新的官方读数比同一周上一次的低了一截：官方中途重置了每周限额，记下来，折算额度时重置之前的消耗不算
     private func noteWeeklyReading() {
